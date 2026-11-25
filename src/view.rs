@@ -115,8 +115,7 @@ impl<T> Index<usize> for Col<'_, T> {
     /// assert_eq!(m.col(0)[1], 3);
     /// ```
     fn index(&self, i: usize) -> &T {
-        self.get(i).unwrap_or_else(|| {
-            panic!("column index {i} out of bounds for length {}", self.len)
-        })
+        self.get(i)
+            .unwrap_or_else(|| panic!("column index {i} out of bounds for length {}", self.len))
     }
 }

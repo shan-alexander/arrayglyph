@@ -41,3 +41,8 @@ pub mod prelude {
     pub use crate::view::Col;
     pub use crate::{Array, ShapeError, Vector, iota, reduce, scan};
 }
+
+/// Compiles and runs the README's Rust examples as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

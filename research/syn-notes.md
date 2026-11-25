@@ -77,3 +77,33 @@ Syn itself does **not** use trybuild. It **recommends** [trybuild](https://githu
 4. **Feature flags:** default core arrays/macros; `printer`, `parsing`, `rayon` opt-in.
 5. **trybuild** for shape-mismatch (and later glyph) diagnostics; insta for printer snapshots; proptest for semantics. No rustc_private.
 6. **Codegen for visit/fold** only after the primitive set grows (axis, inner/outer product, trains). Until then, hand-written walks are fine.
+
+## Evaluation order: right-to-left vs Rust-native
+
+Glyph text is parsed in a delimited context; only method chains reach rustc, so the compiler never sees our evaluation order. Humans and agents reading glyphs do. Is APL's uniform right-to-left (R-to-L) rule worth the unlearning cost, or should we add a left-to-right (L-to-R) mode or Rust-like precedence?
+
+**Precedent.** Iverson chose one rule: subject to parentheses, a function's right argument is the entire expression following it ([Conventions Governing Order of Evaluation](https://www.jsoftware.com/papers/EvalOrder.htm), 1966; [The Design of APL](https://www.jsoftware.com/papers/APLDesign1.htm)). He argued that conventional precedence is less uniformly known than it seems, scales poorly as the function set grows, and splits `F/x G y` into `(F/x) G y` vs `F/(x G y)` depending on the relative priority of `F` and `G`. R-to-L then matches spoken math (`F G x` = `F(G(x))`, "sum of products"), lets Horner form `a+x×b+x×c` stand unparenthesized, and makes a right-fold `-/` the alternating sum, consistent with inserting the operator.
+
+The major Iversonian languages kept this for *expressions*: APL, [J](https://www.jsoftware.com/primer/order_of_eval.htm) (`10-4-3` is 9), [BQN](https://mlochbaum.github.io/BQN/tutorial/expression.html) (functions R-to-L; modifiers bind tighter, associate L-to-R), [Uiua](https://www.uiua.org/) (stack language, "right to left … with only one precedence rule"), and [Q/kdb+](https://code.kx.com/q/basics/syntax/) ("left-of-right": expressions are R-to-L; statement lists in function bodies run L-to-R). Q did **not** flip expression evaluation. Some array languages did orient syntax the other way: [Nial](https://www.nial-array-language.org/ndocs/nsl/NialLecture.html) evaluates *infix* L-to-R with no precedence (`3+5*4` is 32) but still applies stacked *prefix* operations right-to-left; Lochbaum's experimental [I](https://mlochbaum.github.io/BQN/commentary/ltr.html) (2012) was L-to-R throughout — he later kept R-to-L in BQN as too radical to change; Jelly uses L-to-R chains ([APL Wiki](https://aplwiki.com/wiki/Right-to-left_evaluation)). Distinct from expression order: K expressions stay R-to-L, but K's reduce `/` is a **left** fold ([ngn/k book](https://xpqz.github.io/kbook/Adverbs.html)). MATLAB, NumPy, and Julia, outside this family, kept algebraic precedence.
+
+**Worked examples.** Phase 1 has six dyadic scalars. A Rust-native scheme needs **two infix precedence levels** (Product `× ÷` above Sum `+ -`) and left associativity — a slice of Rust's much larger table (syn's `precedence.rs` has on the order of fifteen levels once assign, compare, bitwise, cast, and prefix are counted).
+
+| glyph | R-to-L, no precedence (APL / arrayglyph) | Rust precedence, left-assoc |
+|---|---|---|
+| `2 × 3 + 4` | `2×(3+4)` = **14** | `(2×3)+4` = **10** |
+| `2 + 3 × 4` | `2+(3×4)` = **14** | `2+(3×4)` = **14** (agrees) |
+| `8 ÷ 4 - 2` | `8÷(4-2)` = **4** | `(8÷4)-2` = **0** |
+| `8 - 4 - 2` | `8-(4-2)` = **6** | `(8-4)-2` = **2** |
+| `-/1 2 3` | `1-(2-3)` = **2** (alternating sum) | left fold: `(1-2)-3` = **−4** |
+| `÷/8 4 2` | `8÷(4÷2)` = **4** | left fold: `(8÷4)÷2` = **1** |
+| `+/a × b` | `+/(a×b)` — sum of products | if `+/` is a tight prefix: `(+/a)×b` |
+
+arrayglyph already defines reduce/scan as right folds (`rfold`; DESIGN.md §7: `-/1 2 3` = 2). That agrees with writing the same operators out (`1 - 2 - 3` = 2) **only if** infix is also R-to-L. Mixing Rust-precedence or L-to-R infix with a still-R-to-L `-/` would make `-/v` disagree with its expanded form. Trains and monadic composition (`+/⍉m` vs `⍉+/m`) assume long right scope; Nial shows you cannot flip infix without deciding prefix separately.
+
+**Readers and the pretty-printer.** Rust-arriving humans will trip on `2 × 3 + 4` = 14; that cost is real and should be taught. APL-arriving humans get the language they expect. A single rule is easier to state than a table and removes "which binds tighter?" ambiguity — the token-density / zero-ambiguity goal. LLMs have far more Rust than APL in training data; it is reasonable to worry they will silently apply Rust precedence to glyph text, but that is speculation about model behaviour, not a measured result. The counter is that the rule is one sentence in a prompt, whereas a hybrid table is easier to mis-predict. Desugaring already emits unambiguous method chains (`a.zip_with(&b, Mul).reduce(Add)`); anyone unsure can run `arrayglyph-fmt`.
+
+**Middle grounds.** Keep R-to-L, and *encourage parentheses* in docs when mixed non-associative ops appear (`2 × (3 + 4)` even when redundant). A lint or `--explain` flag that prints implicit grouping (BQN-style explain diagrams) is the right Phase 2 teaching tool. A second L-to-R or Rust-precedence *mode* would create two dialects, break `rust_to_glyph(glyph_to_rust(g)) == g` unless the mode is stored in the source, and split the corpus and the community — not worth it. Importing Rust precedence as the only rule would still need special cases for `f/` and trains, which is a precedence table by another name.
+
+**Phase 1 blocker.** None. The current printer is already a hand-rolled R-to-L recursive-descent parser emitting method chains; reduce/scan are `rfold`. Changing evaluation order would be a breaking semantic rewrite, not something Phase 1 needs in order to compile. Do not change Phase 1 build behaviour.
+
+**Recommendation.** Keep one uniform rule: in glyph text, no infix precedence, the right argument extends as far as parentheses allow, and reduction/scan stay right folds so `-/v` matches inserted `-`. Document the `2 × 3 + 4` = 14 gotcha; parenthesize freely in teaching examples; add a grouping lint later. Do not add an L-to-R or Rust-precedence dialect. rustc never sees the glyph order; the pretty-printer is how Rust readers check their work. The unlearning cost is real, but smaller than two meanings for the same glyphs, or a reduction that disagrees with its own expanded form.

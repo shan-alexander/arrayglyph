@@ -350,7 +350,10 @@ impl<T, const ROWS: usize, const COLS: usize> Array<T, ROWS, COLS> {
     /// assert_eq!(m.col(1).to_vec(), vec![2, 4]);
     /// ```
     pub fn col(&self, j: usize) -> Col<'_, T> {
-        assert!(j < COLS, "column index {j} out of bounds for {COLS} columns");
+        assert!(
+            j < COLS,
+            "column index {j} out of bounds for {COLS} columns"
+        );
         Col::new(&self.data, j, COLS, ROWS)
     }
 
@@ -501,7 +504,12 @@ impl<T, const ROWS: usize, const COLS: usize> Array<T, ROWS, COLS> {
     where
         T: Clone,
     {
-        const { assert!(COLS > 0, "reduce: cannot reduce a zero-length axis (COLS == 0)") };
+        const {
+            assert!(
+                COLS > 0,
+                "reduce: cannot reduce a zero-length axis (COLS == 0)"
+            )
+        };
         Array {
             data: self.rows().map(rfold_row::<T, O>).collect(),
         }
@@ -790,9 +798,7 @@ impl<T: fmt::Debug, const ROWS: usize, const COLS: usize> fmt::Debug for Array<T
     }
 }
 
-impl<T: fmt::Display, const ROWS: usize, const COLS: usize> fmt::Display
-    for Array<T, ROWS, COLS>
-{
+impl<T: fmt::Display, const ROWS: usize, const COLS: usize> fmt::Display for Array<T, ROWS, COLS> {
     /// Prints APL-style: right-aligned columns, one line per row.
     ///
     /// ```

@@ -60,7 +60,11 @@ arith_op!(
     /// use arrayglyph::{op::Add, Array};
     /// assert_eq!(Array::vector([1, 2, 3]).reduce(Add).item(), 6);
     /// ```
-    Add, Add, add, '+', true
+    Add,
+    Add,
+    add,
+    '+',
+    true
 );
 arith_op!(
     /// Subtraction, glyph `-`. This is **not associative**, so reductions
@@ -70,7 +74,11 @@ arith_op!(
     /// use arrayglyph::{op::Sub, Array};
     /// assert_eq!(Array::vector([1, 2, 3]).reduce(Sub).item(), 2);
     /// ```
-    Sub, Sub, sub, '-', false
+    Sub,
+    Sub,
+    sub,
+    '-',
+    false
 );
 arith_op!(
     /// Multiplication, glyph `×`.
@@ -79,7 +87,11 @@ arith_op!(
     /// use arrayglyph::{op::Mul, Array};
     /// assert_eq!(Array::vector([2, 3, 4]).reduce(Mul).item(), 24);
     /// ```
-    Mul, Mul, mul, '×', true
+    Mul,
+    Mul,
+    mul,
+    '×',
+    true
 );
 arith_op!(
     /// Division, glyph `÷`. It uses `T`'s own `Div`, so integer division
@@ -90,7 +102,11 @@ arith_op!(
     /// use arrayglyph::{op::Div, Array};
     /// assert_eq!(Array::vector([8, 4, 2]).reduce(Div).item(), 4);
     /// ```
-    Div, Div, div, '÷', false
+    Div,
+    Div,
+    div,
+    '÷',
+    false
 );
 
 /// Maximum, glyph `⌈`. Uses `PartialOrd`. If the comparison is false

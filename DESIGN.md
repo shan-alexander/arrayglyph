@@ -215,8 +215,48 @@ implemented as iterator folds. Phase 1 has no `proc-macro` crate.
   (APL would write `,5`) and is rejected.
 * The output is checked: `tests/printer_compiles.rs` pastes desugared output
   into real Rust and evaluates it.
-* **Not yet:** source spans (error positions are byte offsets in the input
-  only), comments, and multi-statement programs.
+* **Known limitation.** A strand that mixes integer and float literals
+  (`¯1.5 2`) desugars to `Array::vector([-1.5, 2])`, which Rust rejects
+  because the literals have different types. Write `¯1.5 2.0` instead.
+  Numbers are kept as literal text, so the printer doesn't rewrite them.
+* **Not yet:** comments and multi-statement programs.
+
+### 9.1 Spans (data model ready, rendering is Phase 2)
+
+The printer's data model already carries structured source locations. This
+keeps Phase 2's span work additive.
+
+```rust
+pub struct Pos  { pub offset: usize, pub line: usize, pub col: usize }
+pub struct Span { pub start: Pos, pub end: Pos }   // half-open [start, end)
+pub struct Expr { pub kind: ExprKind, pub span: Span }
+pub struct ParseError { pub message: String, pub span: Span }
+```
+
+* `offset` is a **byte** offset, always on a UTF-8 char boundary. `line` is
+  1-based and lines split on `\n`. `col` is 1-based and **counts chars, not
+  bytes**: `⍴` (3 bytes), `×` (2 bytes), and `¯` (2 bytes) each advance the
+  column by exactly 1.
+* `LineIndex` builds a line-start table once per source string. Each
+  `pos(offset)` is a binary search plus a char count within one line.
+  `LineIndex` is public so tools can map their own offsets.
+* **Tokens** (glyph and Rust lexers) and **every AST node** carry a span.
+  Node spans cover their whole source extent. A parenthesised expression
+  includes its parentheses. `+.×` is a single token span. A strand spans from
+  its first number to its last.
+* `Expr::parse_glyph` spans point into the glyph text. `Expr::parse_rust`
+  spans point into the Rust text. Printing doesn't keep spans, because
+  `to_rust` and `to_glyph` produce fresh text.
+* **Errors** carry the offending token's span. For "unexpected end of input"
+  and unclosed `(` errors, the span is empty and sits at end of input.
+  `ParseError::offset()` is a shorthand for `span.start.offset`. `Display`
+  prints `message (at line:col)`.
+* Unit tests cover multi-line input, multi-byte glyphs, error spans, and
+  Rust-side spans (`src/printer/mod.rs`, `span_tests`).
+* **Deliberately not done yet (Phase 2):** span joining and merging APIs,
+  mapping emitted Rust fragments back to glyph spans (a source map),
+  multi-line caret or underline error rendering, and IDE/LSP integration. The
+  CLI prints only a minimal single-line caret.
 
 ## 10. Open questions
 
@@ -254,8 +294,9 @@ transpose, reshape, `reduce!`/`scan!`, the bidirectional printer, and the
 * **Opt-in Rayon parallel variants** behind a `rayon` cargo feature:
   `par_reduce`, `par_zip_with`, and `par_matmul`. Parallel reduce is only
   offered for `ASSOCIATIVE` ops, which the type system already tracks.
-* **Span tracking in the printer.** Every emitted Rust fragment maps back to a
-  byte range in the glyph source, for error messages, IDE hover, and diff views.
+* **Span tracking in the printer.** Build on the §9.1 data model: span join
+  helpers, a source map from each emitted Rust fragment back to its glyph
+  `Span` (for IDE hover and diff views), and rich multi-line error rendering.
 * **Property tests (proptest)** comparing every glyph op against an explicit
   nested-loop reference implementation, including round-trip
   `glyph → rust → glyph` on generated ASTs.
