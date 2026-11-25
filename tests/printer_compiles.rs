@@ -1,0 +1,57 @@
+//! The desugared Rust is real Rust: each case pins the printer output and
+//! then evaluates the exact same expression text.
+
+use arrayglyph::prelude::*;
+use arrayglyph::printer::glyph_to_rust;
+
+fn squash(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Asserts that the printer's output for `$glyph` is token-for-token the
+/// Rust written after `=>`, then evaluates that Rust.
+macro_rules! check {
+    ($glyph:literal => $($rust:tt)*) => {{
+        assert_eq!(
+            squash(&glyph_to_rust($glyph).unwrap()),
+            squash(stringify!($($rust)*)),
+            "printer output for {}",
+            $glyph
+        );
+        $($rust)*
+    }};
+}
+
+#[test]
+fn desugared_output_compiles_and_evaluates() {
+    let a = Array::vector([1, 2, 3]);
+    let b = Array::vector([4, 5, 6]);
+    let m = Array::from_rows([[1, 2], [3, 4]]);
+
+    let dot = check!("+/a × b" => a.zip_with(&b, Mul).reduce(Add));
+    assert_eq!(dot.item(), 32);
+
+    let s = check!("-/a" => a.reduce(Sub));
+    assert_eq!(s.item(), 2);
+
+    let run = check!("⌈\\a - b" => a.zip_with(&b, Sub).scan(Max));
+    assert_eq!(run.as_slice(), &[-3, -3, -3]);
+
+    let ext = check!("2 × a" => Array::splat(2).zip_with(&a, Mul));
+    assert_eq!(ext.as_slice(), &[2, 4, 6]);
+
+    let lit = check!("1 2 3 + a" => Array::vector([1, 2, 3]).zip_with(&a, Add));
+    assert_eq!(lit.as_slice(), &[2, 4, 6]);
+
+    let sq = check!("m +.× ⍉m" => m.matmul(&m.transpose()));
+    assert_eq!(sq.as_slice(), &[5, 11, 11, 25]);
+
+    let rs = check!("2 3⍴⍳6" => iota::<6>().reshape::<2, 3>());
+    assert_eq!(rs.row(1), &[3, 4, 5]);
+
+    let colsum = check!("+/⍉m" => m.transpose().reduce(Add));
+    assert_eq!(colsum.as_slice(), &[4, 6]);
+
+    let shp = check!("⍴m" => m.shape());
+    assert_eq!(shp, (2, 2));
+}
