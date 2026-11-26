@@ -13,6 +13,9 @@ APL-inspired, compile-time-shaped arrays for Rust. *(Project codename: Iota.)*
   `compose(Reduce(Add).axis::<1>(), Transpose).call(&m)`.
 * **A pretty-printer and the `arrayglyph-fmt` CLI** convert dense glyph
   notation to verbose Rust and back.
+* **Small conveniences:** `broadcast`, `mean`/`mean_axis`, scalar operators
+  (`&m * 2.0`), `{:.1}`-aware printing, and `table::Table` for loading a
+  labelled CSV into a shaped array.
 
 Status: Phase 1 prototype. Not published to crates.io (`publish = false`).
 See [DESIGN.md](DESIGN.md) for the rationale, semantics, open questions, and

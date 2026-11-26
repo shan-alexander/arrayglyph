@@ -426,7 +426,12 @@ pub struct ParseError { pub message: String, pub span: Span }
 
 **Phase 1 (this milestone).** `Array<T, R, C>`, views, elementwise ops, matmul,
 transpose, reshape, `reduce!`/`scan!` with `axis = 0 | 1`, the bidirectional printer, and the
-`arrayglyph-fmt` CLI.
+`arrayglyph-fmt` CLI. Convenience APIs added while building the showcase (no glyph forms yet):
+`broadcast::<R, C>()` for length-1 axes, `mean()`/`mean_axis::<K>()`, scalar
+operators (`&m * 2.0`), precision-aware `Display`, and `table::Table`, a
+tiny labelled-CSV loader that checks the data's shape once at load time.
+`examples/WISHLIST.md` tracks what the showcase still wanted (glyph-level
+broadcasting, forks and `≢`, argmax, comparisons, labelled results).
 
 **Phase 2**
 
