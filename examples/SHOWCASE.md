@@ -3,8 +3,11 @@
 This is a guided reading of [`showcase.rs`](showcase.rs): two weeks of daily
 highs, computed once as dense APL-style glyphs and once as the verbose Rust
 they stand for. A `show!` macro in the example asserts that the
-pretty-printer's translation of each glyph string is token-for-token the Rust
-that runs, so the two sides cannot drift.
+pretty-printer's translation of each glyph string (method style, the
+default) is token-for-token the Rust that runs, so the two sides cannot
+drift. It also prints the macro-style spelling (`arrayglyph-fmt --style
+macro`), which is shown below as **Macro style**. Both styles always write
+the axis.
 
 ## The dataset
 
@@ -45,10 +48,12 @@ The printed table starts like this (rows are days, columns are cities):
 ```
 
 A few glyph-reading rules come up throughout. `⌿` and `⍀` work **down each
-column** (axis 0, the Rust default: a 14×5 array becomes 1×5). `/` and `\`
-work **along each row** (axis 1: 14×5 becomes 14×1). Prefix forms bind tighter
+column** (axis 0: a 14×5 array becomes 1×5; Rust `x.sum::<0>()` or
+`reduce!(+[0], x)`). `/` and `\` work **along each row** (axis 1: 14×5
+becomes 14×1; `x.sum::<1>()` or `reduce!(+[1], x)`). Prefix forms bind tighter
 than any infix operator, so `+⌿x ÷ 14.0` is `(+⌿x) ÷ 14.0`. `∘` is
-mathematical composition: `(f ∘ g) x` applies `g` first, then `f`.
+mathematical composition: `(f ∘ g) x` applies `g` first, then `f`. In Rust
+a train is `train![f, g]`, listed in the same order as the glyph.
 
 ## 1. Per city: means, warmest day, and range
 
@@ -63,12 +68,18 @@ Axis 0 folds **down each column**, so each city gets one number.
 **Rust**
 
 ```rust
-x.reduce(Add).zip_with(&Array::splat(14.0), Div)
+x.sum::<0>().zip_with(&Array::splat(14.0), Div)
+```
+
+**Macro style**
+
+```rust
+reduce!(+[0], x).zip_with(&Array::splat(14.0), Div)
 ```
 
 `+⌿x` is the column sums (14×5 → 1×5). Division by 14.0, the number of days,
 turns those into means. The `÷` is looser than the prefix `+⌿`, so no
-parentheses are needed. The same values are also `x.mean()`.
+parentheses are needed. The same values are also `x.mean::<0>()`.
 
 **Glyph**
 
@@ -79,7 +90,13 @@ parentheses are needed. The same values are also `x.mean()`.
 **Rust**
 
 ```rust
-x.reduce(Max)
+x.max::<0>()
+```
+
+**Macro style**
+
+```rust
+reduce!(max[0], x)
 ```
 
 `⌈` is max. This is the warmest day in each city over the two weeks.
@@ -93,7 +110,13 @@ x.reduce(Max)
 **Rust**
 
 ```rust
-x.reduce(Max).zip_with(&x.reduce(Min), Sub)
+x.max::<0>().zip_with(&x.min::<0>(), Sub)
+```
+
+**Macro style**
+
+```rust
+reduce!(max[0], x).zip_with(&reduce!(min[0], x), Sub)
 ```
 
 `⌊` is min. The two reductions are 1×5, so their difference is the range of
@@ -123,12 +146,18 @@ Axis 1 folds **along each row**, so each day gets one number.
 **Rust**
 
 ```rust
-x.reduce_axis::<1>(Add).zip_with(&Array::splat(5.0), Div)
+x.sum::<1>().zip_with(&Array::splat(5.0), Div)
+```
+
+**Macro style**
+
+```rust
+reduce!(+[1], x).zip_with(&Array::splat(5.0), Div)
 ```
 
 `+/x` is the row sums (14×5 → 14×1). Dividing by 5.0, the number of cities,
-gives the five-city mean for each day. In Rust this is `reduce_axis::<1>`,
-because the default `reduce` is axis 0.
+gives the five-city mean for each day. In Rust the axis is written out:
+`sum::<1>()`, or `+[1]` in the macro.
 
 **Glyph**
 
@@ -139,7 +168,13 @@ because the default `reduce` is axis 0.
 **Rust**
 
 ```rust
-x.reduce_axis::<1>(Max).zip_with(&x.reduce_axis::<1>(Min), Sub)
+x.max::<1>().zip_with(&x.min::<1>(), Sub)
+```
+
+**Macro style**
+
+```rust
+reduce!(max[1], x).zip_with(&reduce!(min[1], x), Sub)
 ```
 
 Same pattern as the per-city range, but with `/` (axis 1) instead of `⌿`:
@@ -172,7 +207,13 @@ Reducing both axes is two calls. For `+` the order does not matter.
 **Rust**
 
 ```rust
-x.reduce(Add).reduce_axis::<1>(Add)
+x.sum::<0>().sum::<1>()
+```
+
+**Macro style**
+
+```rust
+reduce!(+[1], reduce!(+[0], x))
 ```
 
 **Glyph**
@@ -184,7 +225,13 @@ x.reduce(Add).reduce_axis::<1>(Add)
 **Rust**
 
 ```rust
-x.reduce_axis::<1>(Add).reduce(Add)
+x.sum::<1>().sum::<0>()
+```
+
+**Macro style**
+
+```rust
+reduce!(+[0], reduce!(+[1], x))
 ```
 
 `+/+⌿x` first sums down the columns (`+⌿`, 14×5 → 1×5) and then along that
@@ -213,12 +260,13 @@ reshapes two weeks into two weekly means per city.
 **Rust**
 
 ```rust
-compose(compose(compose(Reshape::<5, 2>, Reduce(Add).axis::<1>()), Reshape::<10, 7>), Transpose)
+train![reshape(5, 2), reduce(+[1]), reshape(10, 7), transpose]
     .call(&x)
     .zip_with(&Array::splat(7.0), Div)
 ```
 
-`∘` is applied from the right, so read the train inside the parentheses
+The train is the same in both styles. `train![…]` lists its functions in
+the same order as the glyph, and `∘` is applied from the right, so read both
 right to left:
 
 1. `⍉` transposes, 14×5 → 5×14: one row per city.
@@ -229,8 +277,8 @@ right to left:
 
 Then `÷ 7.0` turns totals into means. Prefix application binds tighter than
 `÷`, so the division applies to the whole result of the train, not only to
-`x`. Every intermediate shape is a type: a typo such as `10 8⍴` would not
-compile.
+`x`. Every intermediate shape is a type: a typo such as `10 8⍴` (or
+`reshape(10, 8)`) would not compile.
 
 ```text
                   week 1    week 2    change
@@ -268,13 +316,14 @@ The spell itself is a two-function train:
 **Rust**
 
 ```rust
-compose(Reduce(Max), Scan(Add)).call(&a)
+train![reduce(max[0]), scan(+[0])].call(&a)
 ```
 
 `+⍀` is the running sum **down each column** (axis-0 scan: the shape stays
 14×5). Then `⌈⌿` takes the largest value of that running sum in each city.
 The result is how far, in °C·days, the warmest spell sat above that city's
-own mean. `Reduce(Max)` with no `.axis` is axis 0, matching the glyph `⌿`.
+own mean. The items name their axes, `max[0]` and `+[0]`, matching the
+glyphs `⌿` and `⍀`.
 
 ```text
                   Oslo  London  New York   Tokyo  Sydney
@@ -287,13 +336,14 @@ ahead and is the one the example reports.
 
 ## Rust → glyph
 
-The printer also compresses canonical verbose Rust, including `reduce!`
-calls, back to glyphs:
+The printer also compresses canonical verbose Rust back to glyphs. It reads
+either style and the older spellings (`reduce!(+, x, axis = 1)`,
+`compose(…)`), so code written before the canonical forms still converts:
 
 **Rust**
 
 ```rust
-x.reduce(Max).zip_with(&x.reduce(Min), Sub)
+x.max::<0>().zip_with(&x.min::<0>(), Sub)
 ```
 
 **Glyph**
@@ -305,7 +355,8 @@ x.reduce(Max).zip_with(&x.reduce(Min), Sub)
 **Rust**
 
 ```rust
-reduce!(+, x, axis = 1)
+reduce!(+[1], x)
+reduce!(+, x, axis = 1)   // deprecated spelling, same glyph
 ```
 
 **Glyph**
@@ -317,7 +368,8 @@ reduce!(+, x, axis = 1)
 **Rust**
 
 ```rust
-compose(Reduce(Max), Scan(Add)).call(&a)
+train![reduce(max[0]), scan(+[0])].call(&a)
+compose(Reduce(Max), Scan(Add)).call(&a)   // lower-level API, same glyph
 ```
 
 **Glyph**
@@ -326,10 +378,29 @@ compose(Reduce(Max), Scan(Add)).call(&a)
 (⌈⌿ ∘ +⍀) a
 ```
 
-`reduce!(+, x)` with no keyword would print as `+⌿x` (the default, axis 0).
-Passing `axis = 1` is what selects `/`.
+The bracket in `reduce!(+[1], x)` is APL's own axis syntax, `+/[1] x`, so
+`[1]` selects `/` and `[0]` selects `⌿`.
 
-## New in this round
+## 6. Profiling one step
+
+`prof!` evaluates an expression once, times it with `std::time::Instant`,
+prints one line to stderr, and returns the value. The optional `glyph = "…"`
+puts the glyph next to the Rust in the report:
+
+```rust
+let weekly_again = prof!(
+    glyph = "(5 2⍴ ∘ +/ ∘ 10 7⍴ ∘ ⍉) x",
+    train![reshape(5, 2), reduce(+[1]), reshape(10, 7), transpose].call(&x)
+);
+```
+
+```text
+[prof] examples/showcase.rs:180  (5 2⍴ ∘ +/ ∘ 10 7⍴ ∘ ⍉) x  ⇐  train![reshape(5, 2), reduce(+[1]), reshape(10, 7), transpose].call(&x)  → 5×2  in 2.781µs
+```
+
+The time varies from run to run; the shape (`5×2`) comes from the type.
+
+## Earlier additions
 
 Five small APIs landed while the showcase was being written. Each has rustdoc
 and tests; [WISHLIST.md](WISHLIST.md) lists them alongside the features the
@@ -340,8 +411,9 @@ showcase still wanted.
   `format!("{temps:.1}")`.
 - **`Array::broadcast`.** Stretch a length-1 axis to a larger shape, checked
   at compile time: `x.zip_with(&mean.broadcast(), Sub)`.
-- **`mean` / `mean_axis`.** Per-column means by default, or
-  `m.mean_axis::<1>()` for per-row means. `+⌿x ÷ 14.0` is also `x.mean()`.
+- **`mean::<K>()`.** `m.mean::<0>()` for per-column means, `m.mean::<1>()`
+  for per-row means. `+⌿x ÷ 14.0` is also `x.mean::<0>()`. (This was
+  `mean()` / `mean_axis::<K>()` until the axis became explicit everywhere.)
 - **Scalar operators.** Elementwise `+ - * /` with a scalar on the right,
   without spelling out `Array::splat`: `&m * 2.0`, `m - 1.0`.
 - **`table::Table`.** A tiny labelled-CSV loader with no new dependencies:

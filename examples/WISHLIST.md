@@ -10,9 +10,19 @@ felt it), and a **sketch**.
 |---|---|---|
 | `Display` honours `{:.1}` / `{:6}` | float tables printed as `13.428571428571429` | `impl Display for Array` |
 | `broadcast::<R2, C2>()` | subtracting the 1×5 city means from the 14×5 data didn't type-check | `Array::broadcast` |
-| `mean()` / `mean_axis::<K>()` | "average per city" is the first thing anyone asks | `Array::mean`, `AlongAxis::mean` |
+| `mean::<K>()` (was `mean()` / `mean_axis::<K>()`) | "average per city" is the first thing anyone asks | `Array::mean`, `AlongAxis::mean` |
 | scalar operators `&m * 2.0`, `m - 1` | `zip_with(&Array::splat(2.0), Mul)` is noisy in hand-written Rust | `impl Add<f64> for Array<f64, …>` etc. |
 | `table::Table::parse_csv` | loading a labelled CSV into a shaped array with no dependencies | `src/table.rs` |
+
+## Built in the explicit-axis round
+
+| feature | why | where |
+|---|---|---|
+| named axis methods `sum`/`prod`/`max`/`min`/`cumsum`/`cumprod`/`cummax`/`cummin::<K>()` | `x.reduce_axis::<1>(Add)` was the noisiest part of every printed line | `Array::sum` etc. |
+| bracket-axis macros `reduce!(+[0], m)` | the axis was optional, so `reduce!(+, m)` hid which way it folded | `reduce!`, `scan!` |
+| flat trains `train![…]` | the weekly-means pipeline was three nested `compose(…)` calls | `train!` |
+| `prof!` | "which step is slow?" had no one-line answer | `prof!`, `prof::Profile` |
+| `arrayglyph-fmt --style <method\|macro\|both>` | reviewers wanted the macro spelling next to the method one | `src/bin/arrayglyph-fmt.rs` |
 
 ## Not built yet
 
@@ -36,8 +46,9 @@ felt it), and a **sketch**.
    markers producing `Array<bool, R, C>`, `count`/`+⌿` over bools, and
    compress returning a `Vec` (its length isn't known at compile time).
 5. **Splitting an axis (weeks) without the transpose dance.** *Why:* weekly
-   means took `(5 2⍴ ∘ +/ ∘ 10 7⍴ ∘ ⍉)`, correct and type-checked but hard
-   to read. *Sketch:* `m.chunks_axis::<0, 7>()` returning `[Array<T, 7, C>;
+   means took `(5 2⍴ ∘ +/ ∘ 10 7⍴ ∘ ⍉)` (now at least a flat
+   `train![reshape(5, 2), reduce(+[1]), reshape(10, 7), transpose]`),
+   correct and type-checked but hard to read. *Sketch:* `m.chunks_axis::<0, 7>()` returning `[Array<T, 7, C>;
    N]`, or rank-3 arrays (Phase 3).
 6. **Labels that survive computation.** *Why:* `Table` keeps row/column
    labels, but every result is a bare `Array`, so the report re-zips labels
