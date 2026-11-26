@@ -10,7 +10,7 @@
 //!   them as methods, `m.sum::<0>()` / `m.cumprod::<1>()`, or as macros with
 //!   a bracketed axis, `reduce!(+[0], m)` / `scan!(*[1], m)` (APL's
 //!   `+/[0] m`). Vectors are `1 × N`, so they use axis 1.
-//! * [`train`] has function values and composition `∘`. [`train!`] writes a
+//! * [`mod@train`] has function values and composition `∘`. [`train!`] writes a
 //!   flat train in glyph order: `(+/ ∘ ⍉) m` is
 //!   `train![reduce(+[1]), transpose].call(&m)`.
 //! * [`prof!`] times an expression and prints its shape to stderr.

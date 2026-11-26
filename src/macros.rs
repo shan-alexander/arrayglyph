@@ -138,7 +138,7 @@ macro_rules! reduce {
 
 /// `f⍀ x` / `f\ x`: scans along an axis (running left fold).
 ///
-/// **Canonical form: `scan!(op[axis], x)`**, as for [`reduce!`]:
+/// **Canonical form: `scan!(op[axis], x)`**, as for [`reduce!`](crate::reduce!):
 /// `scan!(+[0], m)` gives running totals down each column (glyph `+⍀m`),
 /// `scan!(*[1], m)` running products along each row (glyph `×\m`). The
 /// shape doesn't change. The compatibility forms `scan!(op, m, axis = N)`
@@ -197,7 +197,7 @@ macro_rules! scan {
 /// | `(expr)` | — | any function value, e.g. a named train |
 ///
 /// Operators inside `reduce(…)` / `scan(…)` use the same tokens as
-/// [`reduce!`]: `+ - * / max min`. The axis is required in canonical
+/// [`reduce!`](crate::reduce!): `+ - * / max min`. The axis is required in canonical
 /// form; `reduce(+)` (axis 0) is accepted for symmetry with `reduce!(+, m)`.
 ///
 /// The expansion is left-nested [`compose`](crate::train::compose) calls,

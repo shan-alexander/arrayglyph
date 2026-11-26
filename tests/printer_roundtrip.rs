@@ -4,23 +4,24 @@
 //! Glyph evaluation is left to right with Rust-style precedence:
 //! `+ -` < `× ÷ +.×` < `⌈ ⌊` < prefix forms (`f/ f⌿ f\ f⍀ ⍴ ⍉ r c⍴ ⍳n`).
 //!
-//! Axes: `f⌿`/`f⍀` work along axis 0 (the Rust default, `x.reduce(F)`),
-//! `f/`/`f\` along axis 1 (`x.reduce_axis::<1>(F)`).
+//! Axes: `f⌿`/`f⍀` work along axis 0 (`x.sum::<0>()`), `f/`/`f\` along
+//! axis 1 (`x.sum::<1>()`). Both Rust styles always write the axis.
+//! Trains print as flat `train![…]` lists in glyph order.
 
-use arrayglyph::printer::{Expr, glyph_to_rust, rust_to_glyph};
+use arrayglyph::printer::{Expr, Style, glyph_to_rust, glyph_to_rust_with, rust_to_glyph};
 
-/// (canonical glyph, expected verbose Rust)
+/// (canonical glyph, expected method-style Rust)
 const CORPUS: &[(&str, &str)] = &[
     ("x", "x"),
-    ("+/x", "x.reduce_axis::<1>(Add)"),
+    ("+/x", "x.sum::<1>()"),
     ("-/x", "x.reduce_axis::<1>(Sub)"),
-    ("×/x", "x.reduce_axis::<1>(Mul)"),
+    ("×/x", "x.prod::<1>()"),
     ("÷/x", "x.reduce_axis::<1>(Div)"),
-    ("⌈/x", "x.reduce_axis::<1>(Max)"),
-    ("⌊/x", "x.reduce_axis::<1>(Min)"),
-    ("+\\x", "x.scan_axis::<1>(Add)"),
+    ("⌈/x", "x.max::<1>()"),
+    ("⌊/x", "x.min::<1>()"),
+    ("+\\x", "x.cumsum::<1>()"),
     ("-\\1 2 3", "Array::vector([1, 2, 3]).scan_axis::<1>(Sub)"),
-    ("⌈\\v", "v.scan_axis::<1>(Max)"),
+    ("⌈\\v", "v.cummax::<1>()"),
     ("a + b", "a.zip_with(&b, Add)"),
     ("a - b", "a.zip_with(&b, Sub)"),
     ("a × b", "a.zip_with(&b, Mul)"),
@@ -44,21 +45,21 @@ const CORPUS: &[(&str, &str)] = &[
     ("a × b ⌊ c", "a.zip_with(&b.zip_with(&c, Min), Mul)"),
     ("(a × b) ⌊ c", "a.zip_with(&b, Mul).zip_with(&c, Min)"),
     // Prefix forms bind tightest.
-    ("+/a × b", "a.reduce_axis::<1>(Add).zip_with(&b, Mul)"),
-    ("+/(a × b)", "a.zip_with(&b, Mul).reduce_axis::<1>(Add)"),
-    ("+/x - y", "x.reduce_axis::<1>(Add).zip_with(&y, Sub)"),
+    ("+/a × b", "a.sum::<1>().zip_with(&b, Mul)"),
+    ("+/(a × b)", "a.zip_with(&b, Mul).sum::<1>()"),
+    ("+/x - y", "x.sum::<1>().zip_with(&y, Sub)"),
     (
         "-/x ÷ +/y",
-        "x.reduce_axis::<1>(Sub).zip_with(&y.reduce_axis::<1>(Add), Div)",
+        "x.reduce_axis::<1>(Sub).zip_with(&y.sum::<1>(), Div)",
     ),
     (
         "⌊/((a - b) × c)",
-        "a.zip_with(&b, Sub).zip_with(&c, Mul).reduce_axis::<1>(Min)",
+        "a.zip_with(&b, Sub).zip_with(&c, Mul).min::<1>()",
     ),
-    ("+\\+\\x", "x.scan_axis::<1>(Add).scan_axis::<1>(Add)"),
+    ("+\\+\\x", "x.cumsum::<1>().cumsum::<1>()"),
     (
         "⌈\\(a × 2)",
-        "a.zip_with(&Array::splat(2), Mul).scan_axis::<1>(Max)",
+        "a.zip_with(&Array::splat(2), Mul).cummax::<1>()",
     ),
     // Scalars and strands.
     ("2 × v", "Array::splat(2).zip_with(&v, Mul)"),
@@ -72,12 +73,12 @@ const CORPUS: &[(&str, &str)] = &[
     ("¯1 0 1 × v", "Array::vector([-1, 0, 1]).zip_with(&v, Mul)"),
     // Iota, shape, transpose, reshape.
     ("⍳5", "iota::<5>()"),
-    ("+/⍳5", "iota::<5>().reduce_axis::<1>(Add)"),
+    ("+/⍳5", "iota::<5>().sum::<1>()"),
     ("⍳5 + x", "iota::<5>().zip_with(&x, Add)"),
     ("⍴m", "m.shape()"),
     ("⍉m", "m.transpose()"),
-    ("+/⍉m", "m.transpose().reduce_axis::<1>(Add)"),
-    ("⍉+/m", "m.reduce_axis::<1>(Add).transpose()"),
+    ("+/⍉m", "m.transpose().sum::<1>()"),
+    ("⍉+/m", "m.sum::<1>().transpose()"),
     ("2 3⍴⍳6", "iota::<6>().reshape::<2, 3>()"),
     (
         "2 3⍴⍳6 + 1",
@@ -92,8 +93,8 @@ const CORPUS: &[(&str, &str)] = &[
     // Matrix product sits at the × level.
     ("a +.× b", "a.matmul(&b)"),
     ("a +.× ⍉b", "a.matmul(&b.transpose())"),
-    ("+/a +.× b", "a.reduce_axis::<1>(Add).matmul(&b)"),
-    ("+/(a +.× b)", "a.matmul(&b).reduce_axis::<1>(Add)"),
+    ("+/a +.× b", "a.sum::<1>().matmul(&b)"),
+    ("+/(a +.× b)", "a.matmul(&b).sum::<1>()"),
     ("a +.× b + c", "a.matmul(&b).zip_with(&c, Add)"),
     ("a +.× (b + c)", "a.matmul(&b.zip_with(&c, Add))"),
     ("a +.× b +.× c", "a.matmul(&b).matmul(&c)"),
@@ -102,74 +103,149 @@ const CORPUS: &[(&str, &str)] = &[
         "m.reshape::<2, 2>().matmul(&m.reshape::<2, 2>().transpose())",
     ),
     // Explicit composition: `f ∘ g` applies g, then f.
-    (
-        "(+/ ∘ ⍉) m",
-        "compose(Reduce(Add).axis::<1>(), Transpose).call(&m)",
-    ),
-    (
-        "(⌈\\ ∘ ⍉) m",
-        "compose(Scan(Max).axis::<1>(), Transpose).call(&m)",
-    ),
-    ("(⍴ ∘ ⍉) m", "compose(Shape, Transpose).call(&m)"),
+    ("(+/ ∘ ⍉) m", "train![reduce(+[1]), transpose].call(&m)"),
+    ("(⌈\\ ∘ ⍉) m", "train![scan(max[1]), transpose].call(&m)"),
+    ("(⍴ ∘ ⍉) m", "train![shape, transpose].call(&m)"),
     (
         "(⍉ ∘ 2 3⍴) ⍳6",
-        "compose(Transpose, Reshape::<2, 3>).call(&iota::<6>())",
+        "train![transpose, reshape(2, 3)].call(&iota::<6>())",
     ),
     (
         "(+/ ∘ 6⍴) m",
-        "compose(Reduce(Add).axis::<1>(), Reshape::<1, 6>).call(&m)",
+        "train![reduce(+[1]), reshape(1, 6)].call(&m)",
     ),
     (
         "(+/ ∘ ⍉ ∘ 2 3⍴) ⍳6",
-        "compose(compose(Reduce(Add).axis::<1>(), Transpose), Reshape::<2, 3>).call(&iota::<6>())",
-    ),
-    (
-        "(+/ ∘ (⍉ ∘ 2 3⍴)) ⍳6",
-        "compose(Reduce(Add).axis::<1>(), compose(Transpose, Reshape::<2, 3>)).call(&iota::<6>())",
+        "train![reduce(+[1]), transpose, reshape(2, 3)].call(&iota::<6>())",
     ),
     (
         "(+/ ∘ ⍉) m + 1",
-        "compose(Reduce(Add).axis::<1>(), Transpose).call(&m).zip_with(&Array::splat(1), Add)",
+        "train![reduce(+[1]), transpose].call(&m).zip_with(&Array::splat(1), Add)",
     ),
     (
         "(+/ ∘ ⍉) (m + 1)",
-        "compose(Reduce(Add).axis::<1>(), Transpose).call(&m.zip_with(&Array::splat(1), Add))",
+        "train![reduce(+[1]), transpose].call(&m.zip_with(&Array::splat(1), Add))",
     ),
     (
         "2 × (-/ ∘ ⍉) m",
-        "Array::splat(2).zip_with(&compose(Reduce(Sub).axis::<1>(), Transpose).call(&m), Mul)",
+        "Array::splat(2).zip_with(&train![reduce(-[1]), transpose].call(&m), Mul)",
     ),
     (
         "(+/ ∘ ⍉) (⍉ ∘ ⍉) m",
-        "compose(Reduce(Add).axis::<1>(), Transpose).call(&compose(Transpose, Transpose).call(&m))",
+        "train![reduce(+[1]), transpose].call(&train![transpose, transpose].call(&m))",
     ),
     (
         "+/(⍉ ∘ ⍉) m",
-        "compose(Transpose, Transpose).call(&m).reduce_axis::<1>(Add)",
+        "train![transpose, transpose].call(&m).sum::<1>()",
     ),
     // Axis 0: `f⌿` and `f⍀` (down the columns; the Rust default).
-    ("+⌿m", "m.reduce(Add)"),
-    ("-⌿m", "m.reduce(Sub)"),
-    ("⌈⌿m", "m.reduce(Max)"),
-    ("+⍀m", "m.scan(Add)"),
-    ("⌊⍀m", "m.scan(Min)"),
-    ("+⌿m × 2", "m.reduce(Add).zip_with(&Array::splat(2), Mul)"),
-    ("+⌿(m × 2)", "m.zip_with(&Array::splat(2), Mul).reduce(Add)"),
-    ("+/+⌿m", "m.reduce(Add).reduce_axis::<1>(Add)"),
-    ("+⌿+/m", "m.reduce_axis::<1>(Add).reduce(Add)"),
-    ("+⌿⍉m", "m.transpose().reduce(Add)"),
-    ("+⌿m ÷ 3", "m.reduce(Add).zip_with(&Array::splat(3), Div)"),
-    ("m - +⌿m", "m.zip_with(&m.reduce(Add), Sub)"),
-    ("(+⌿ ∘ ⍉) m", "compose(Reduce(Add), Transpose).call(&m)"),
+    ("+⌿m", "m.sum::<0>()"),
+    ("-⌿m", "m.reduce_axis::<0>(Sub)"),
+    ("⌈⌿m", "m.max::<0>()"),
+    ("+⍀m", "m.cumsum::<0>()"),
+    ("⌊⍀m", "m.cummin::<0>()"),
+    ("+⌿m × 2", "m.sum::<0>().zip_with(&Array::splat(2), Mul)"),
+    ("+⌿(m × 2)", "m.zip_with(&Array::splat(2), Mul).sum::<0>()"),
+    ("+/+⌿m", "m.sum::<0>().sum::<1>()"),
+    ("+⌿+/m", "m.sum::<1>().sum::<0>()"),
+    ("+⌿⍉m", "m.transpose().sum::<0>()"),
+    ("+⌿m ÷ 3", "m.sum::<0>().zip_with(&Array::splat(3), Div)"),
+    ("m - +⌿m", "m.zip_with(&m.sum::<0>(), Sub)"),
+    ("(+⌿ ∘ ⍉) m", "train![reduce(+[0]), transpose].call(&m)"),
     (
         "(⌈⍀ ∘ 3 2⍴) ⍳6",
-        "compose(Scan(Max), Reshape::<3, 2>).call(&iota::<6>())",
+        "train![scan(max[0]), reshape(3, 2)].call(&iota::<6>())",
+    ),
+    ("(+/ ∘ +⌿) m", "train![reduce(+[1]), reduce(+[0])].call(&m)"),
+];
+
+/// (canonical glyph, expected macro-style Rust). Every `CORPUS` entry also
+/// round-trips in macro style; these pin the exact text.
+const MACRO_CORPUS: &[(&str, &str)] = &[
+    ("+⌿m", "reduce!(+[0], m)"),
+    ("+/m", "reduce!(+[1], m)"),
+    ("-/x", "reduce!(-[1], x)"),
+    ("×⌿x", "reduce!(*[0], x)"),
+    ("÷/x", "reduce!(/[1], x)"),
+    ("⌈⌿m", "reduce!(max[0], m)"),
+    ("⌊/m", "reduce!(min[1], m)"),
+    ("+⍀m", "scan!(+[0], m)"),
+    ("×\\m", "scan!(*[1], m)"),
+    ("-\\1 2 3", "scan!(-[1], Array::vector([1, 2, 3]))"),
+    ("⌈\\v", "scan!(max[1], v)"),
+    ("⌊⍀m", "scan!(min[0], m)"),
+    ("+/(a × b)", "reduce!(+[1], a.zip_with(&b, Mul))"),
+    ("+/a × b", "reduce!(+[1], a).zip_with(&b, Mul)"),
+    ("+/+⌿m", "reduce!(+[1], reduce!(+[0], m))"),
+    (
+        "+⌿m ÷ 3",
+        "reduce!(+[0], m).zip_with(&Array::splat(3), Div)",
+    ),
+    ("m - +⌿m", "m.zip_with(&reduce!(+[0], m), Sub)"),
+    ("+/⍉m", "reduce!(+[1], m.transpose())"),
+    ("⍉+/m", "reduce!(+[1], m).transpose()"),
+    ("+/a +.× b", "reduce!(+[1], a).matmul(&b)"),
+    ("+\\+\\x", "scan!(+[1], scan!(+[1], x))"),
+    (
+        "(+/ ∘ ⍉ ∘ 2 3⍴) ⍳6",
+        "train![reduce(+[1]), transpose, reshape(2, 3)].call(&iota::<6>())",
     ),
     (
-        "(+/ ∘ +⌿) m",
-        "compose(Reduce(Add).axis::<1>(), Reduce(Add)).call(&m)",
+        "+/(⍉ ∘ ⍉) m",
+        "reduce!(+[1], train![transpose, transpose].call(&m))",
     ),
 ];
+
+#[test]
+fn macro_style_matches_corpus() {
+    for (g, r) in MACRO_CORPUS {
+        assert_eq!(
+            glyph_to_rust_with(g, Style::Macro).unwrap(),
+            *r,
+            "desugaring {g:?}"
+        );
+        assert_eq!(rust_to_glyph(r).unwrap(), *g, "compressing {r:?}");
+    }
+}
+
+#[test]
+fn macro_style_round_trips_whole_corpus() {
+    for (g, method) in CORPUS {
+        let mac = glyph_to_rust_with(g, Style::Macro).unwrap();
+        assert_eq!(
+            rust_to_glyph(&mac).unwrap(),
+            *g,
+            "glyph -> macro -> glyph via {mac:?}"
+        );
+        // Both styles parse to the same tree.
+        assert_eq!(
+            Expr::parse_rust(&mac).unwrap().to_rust(),
+            *method,
+            "macro -> method for {g:?}"
+        );
+        let back = Expr::parse_rust(method)
+            .unwrap()
+            .to_rust_styled(Style::Macro);
+        assert_eq!(back, mac, "method -> macro for {g:?}");
+        // Both styles always write the axis.
+        assert!(
+            !mac.contains("reduce!(+, ") && !mac.contains("axis ="),
+            "{mac}"
+        );
+    }
+}
+
+#[test]
+fn method_style_always_writes_the_axis() {
+    for (g, r) in CORPUS {
+        for bare in [".reduce(", ".scan(", "Reduce(", "Scan(", "compose("] {
+            assert!(
+                !r.contains(bare),
+                "{g:?} printed {r:?} without an explicit axis"
+            );
+        }
+    }
+}
 
 #[test]
 fn glyph_to_rust_matches_corpus() {
@@ -232,6 +308,10 @@ fn non_canonical_glyph_input_is_normalised() {
         ("⌈⍀[1] m", "⌈\\m"),
         ("(+/[0] ∘ ⍉) m", "(+⌿ ∘ ⍉) m"),
         ("(+⌿) m", "+⌿m"),
+        // `∘` is associative: any grouping prints as one flat train.
+        ("(+/ ∘ (⍉ ∘ 2 3⍴)) ⍳6", "(+/ ∘ ⍉ ∘ 2 3⍴) ⍳6"),
+        ("((+/ ∘ ⍉) ∘ 2 3⍴) ⍳6", "(+/ ∘ ⍉ ∘ 2 3⍴) ⍳6"),
+        ("(+/ ∘ (⍉ ∘ (⍉ ∘ ⍉))) m", "(+/ ∘ ⍉ ∘ ⍉ ∘ ⍉) m"),
     ];
     for (input, canon) in cases {
         assert_eq!(Expr::parse_glyph(input).unwrap().to_glyph(), canon);
@@ -268,6 +348,31 @@ fn rust_side_accepts_macros_paths_and_parens() {
         ("m.scan_axis::<0>(Add)", "+⍀m"),
         ("Reduce(Add).axis::<0>().call(&m)", "+⌿m"),
         ("Scan(Max).axis::<1>().call(&m)", "⌈\\m"),
+        // Canonical bracket-axis macros, with trailing commas and paths.
+        ("reduce!(+[0], m)", "+⌿m"),
+        ("reduce!(*[1], m,)", "×/m"),
+        ("scan!(min[0], m)", "⌊⍀m"),
+        ("scan!(/[1], v)", "÷\\v"),
+        // Named const-axis methods.
+        ("m.sum::<0>()", "+⌿m"),
+        ("m.prod::<1>()", "×/m"),
+        ("m.min::<0>().max::<1>()", "⌈/⌊⌿m"),
+        ("m.cumsum::<1>()", "+\\m"),
+        ("m.cummin::<0>()", "⌊⍀m"),
+        // Flat trains: brackets or parens, paths, nesting, trailing comma,
+        // by-value call, and a one-item train normalised to its function.
+        ("train![reduce(+[1]), transpose].call(&m)", "(+/ ∘ ⍉) m"),
+        (
+            "arrayglyph::train!(reduce(+[1]), transpose,).call(m)",
+            "(+/ ∘ ⍉) m",
+        ),
+        (
+            "train![reduce(max[0]), (train![transpose, shape])].call(&m)",
+            "(⌈⌿ ∘ ⍉ ∘ ⍴) m",
+        ),
+        ("train![reduce(+), transpose].call(&m)", "(+⌿ ∘ ⍉) m"),
+        ("train![scan(*[1])].call(&m)", "×\\m"),
+        ("train![reshape(1, 6), (Transpose)].call(&m)", "(6⍴ ∘ ⍉) m"),
     ];
     for (input, glyph) in cases {
         assert_eq!(rust_to_glyph(input).unwrap(), glyph, "{input}");
@@ -329,6 +434,19 @@ fn rust_errors() {
         "reduce!(+, m, axes = 1)",
         "Reduce(Add).axis::<3>().call(&m)",
         "scan!(+, m, axis = x)",
+        // New forms: axis required on named methods and in range.
+        "m.sum()",
+        "m.cumsum::<2>()",
+        "m.mean::<0>()", // no glyph form
+        "reduce!(+[2], m)",
+        "reduce!(+[0] m)",
+        "reduce!(+[0], m, axis = 1)",
+        "train![].call(&m)",
+        "train![transpose]",                    // not applied
+        "train![frobnicate].call(&m)",          // unknown item
+        "train![reduce(%[1])].call(&m)",        // unknown op
+        "train![reshape(2)].call(&m)",          // reshape needs r, c
+        "train![transpose transpose].call(&m)", // missing comma
     ];
     for r in bad {
         assert!(rust_to_glyph(r).is_err(), "{r:?} should be rejected");

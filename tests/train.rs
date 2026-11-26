@@ -52,14 +52,21 @@ fn printer_output_for_trains_evaluates() {
     let m = Array::from_rows([[1, 2], [3, 4]]);
     assert_eq!(
         glyph_to_rust("(-/ ∘ ⍉) m").unwrap(),
-        "compose(Reduce(Sub).axis::<1>(), Transpose).call(&m)"
+        "train![reduce(-[1]), transpose].call(&m)"
     );
     // Left fold on each column: 1 - 3, 2 - 4
     assert_eq!(
-        compose(Reduce(Sub).axis::<1>(), Transpose)
-            .call(&m)
-            .as_slice(),
+        train![reduce(-[1]), transpose].call(&m).as_slice(),
         &[-2, -2]
+    );
+    // Nested grouping prints flat (∘ is associative).
+    assert_eq!(
+        glyph_to_rust("(⍉ ∘ (+/ ∘ ⍉)) m").unwrap(),
+        "train![transpose, reduce(+[1]), transpose].call(&m)"
+    );
+    assert_eq!(
+        train![transpose, reduce(+[1]), transpose].call(&m),
+        compose(Transpose, compose(Reduce(Add).axis::<1>(), Transpose)).call(&m)
     );
 }
 

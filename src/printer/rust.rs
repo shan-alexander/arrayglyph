@@ -1,48 +1,57 @@
 //! Canonical verbose Rust: emitter and a parser for exactly the emitted subset.
 
-use super::{Expr, ExprKind, Func, LineIndex, ParseError, Span, Train, TrainKind};
+use super::{Expr, ExprKind, Func, LineIndex, ParseError, Span, Style, Train, TrainKind};
 
-pub(super) fn print(e: &Expr) -> String {
+pub(super) fn print(e: &Expr, style: Style) -> String {
+    let p = |x: &Expr| print(x, style);
     match &e.kind {
         ExprKind::Ident(s) => s.clone(),
         ExprKind::Scalar(n) => format!("Array::splat({n})"),
         ExprKind::Strand(ns) => format!("Array::vector([{}])", ns.join(", ")),
         ExprKind::Iota(n) => format!("iota::<{n}>()"),
-        ExprKind::Shape(x) => format!("{}.shape()", print(x)),
-        ExprKind::Transpose(x) => format!("{}.transpose()", print(x)),
+        ExprKind::Shape(x) => format!("{}.shape()", p(x)),
+        ExprKind::Transpose(x) => format!("{}.transpose()", p(x)),
         ExprKind::Reshape(dims, x) => match dims.as_slice() {
-            [n] => format!("{}.reshape::<1, {n}>()", print(x)),
-            [r, c] => format!("{}.reshape::<{r}, {c}>()", print(x)),
+            [n] => format!("{}.reshape::<1, {n}>()", p(x)),
+            [r, c] => format!("{}.reshape::<{r}, {c}>()", p(x)),
             _ => unreachable!("parser guarantees rank 1 or 2"),
         },
         ExprKind::Dyadic(f, a, b) => {
-            format!("{}.zip_with(&{}, {})", print(a), print(b), f.rust_name())
+            format!("{}.zip_with(&{}, {})", p(a), p(b), f.rust_name())
         }
-        ExprKind::Reduce(f, 0, x) => format!("{}.reduce({})", print(x), f.rust_name()),
-        ExprKind::Reduce(f, k, x) => {
-            format!("{}.reduce_axis::<{k}>({})", print(x), f.rust_name())
-        }
-        ExprKind::Scan(f, 0, x) => format!("{}.scan({})", print(x), f.rust_name()),
-        ExprKind::Scan(f, k, x) => format!("{}.scan_axis::<{k}>({})", print(x), f.rust_name()),
-        ExprKind::MatMul(a, b) => format!("{}.matmul(&{})", print(a), print(b)),
-        ExprKind::Apply(t, x) => format!("{}.call(&{})", print_train(t), print(x)),
+        ExprKind::Reduce(f, k, x) => match (style, f.reduce_method()) {
+            (Style::Macro, _) => format!("reduce!({}[{k}], {})", f.macro_token(), p(x)),
+            (Style::Method, Some(m)) => format!("{}.{m}::<{k}>()", p(x)),
+            (Style::Method, None) => format!("{}.reduce_axis::<{k}>({})", p(x), f.rust_name()),
+        },
+        ExprKind::Scan(f, k, x) => match (style, f.scan_method()) {
+            (Style::Macro, _) => format!("scan!({}[{k}], {})", f.macro_token(), p(x)),
+            (Style::Method, Some(m)) => format!("{}.{m}::<{k}>()", p(x)),
+            (Style::Method, None) => format!("{}.scan_axis::<{k}>({})", p(x), f.rust_name()),
+        },
+        ExprKind::MatMul(a, b) => format!("{}.matmul(&{})", p(a), p(b)),
+        ExprKind::Apply(t, x) => format!("{}.call(&{})", print_train(t), p(x)),
     }
 }
 
+/// A train as a flat `train![…]` list, in glyph (`∘`) order.
 fn print_train(t: &Train) -> String {
+    let items: Vec<String> = t.parts().into_iter().map(train_item).collect();
+    format!("train![{}]", items.join(", "))
+}
+
+fn train_item(t: &Train) -> String {
     match &t.kind {
-        TrainKind::Reduce(f, 0) => format!("Reduce({})", f.rust_name()),
-        TrainKind::Reduce(f, k) => format!("Reduce({}).axis::<{k}>()", f.rust_name()),
-        TrainKind::Scan(f, 0) => format!("Scan({})", f.rust_name()),
-        TrainKind::Scan(f, k) => format!("Scan({}).axis::<{k}>()", f.rust_name()),
-        TrainKind::Shape => "Shape".to_string(),
-        TrainKind::Transpose => "Transpose".to_string(),
+        TrainKind::Reduce(f, k) => format!("reduce({}[{k}])", f.macro_token()),
+        TrainKind::Scan(f, k) => format!("scan({}[{k}])", f.macro_token()),
+        TrainKind::Shape => "shape".to_string(),
+        TrainKind::Transpose => "transpose".to_string(),
         TrainKind::Reshape(dims) => match dims.as_slice() {
-            [n] => format!("Reshape::<1, {n}>"),
-            [r, c] => format!("Reshape::<{r}, {c}>"),
+            [n] => format!("reshape(1, {n})"),
+            [r, c] => format!("reshape({r}, {c})"),
             _ => unreachable!("parser guarantees rank 1 or 2"),
         },
-        TrainKind::Compose(f, g) => format!("compose({}, {})", print_train(f), print_train(g)),
+        TrainKind::Compose(..) => unreachable!("parts() flattens compositions"),
     }
 }
 
@@ -148,11 +157,22 @@ impl Parser {
         }
         Some((k + 1, last))
     }
-    /// fn_value := path::(compose `(` fn_value `,` fn_value `)`
+    /// fn_value := `train![` item, … `]` | `(` fn_value `)`
+    ///           | path::(compose `(` fn_value `,` fn_value `)`
     ///           | (Reduce | Scan) `(` op `)` [`.axis::<` k `>()`]
     ///           | Transpose | Shape | Reshape `::<` r `,` c `>`)
     fn fn_value(&mut self) -> Result<Train, ParseError> {
         let at = self.cur();
+        if self.at_train_macro() {
+            return self.train_macro();
+        }
+        if self.is_punct("(") {
+            self.pos += 1;
+            let mut t = self.fn_value()?;
+            self.eat(")")?;
+            t.span = Span::new(at.start, self.prev().end);
+            return Ok(t);
+        }
         let Some((len, name)) = self.path_tail() else {
             return self.err("expected a function value (e.g. `Reduce(Add)`)");
         };
@@ -210,6 +230,111 @@ impl Parser {
             span: Span::new(at.start, self.prev().end),
         })
     }
+    /// Is the cursor at `train!` (optionally `arrayglyph::train!`)?
+    fn at_train_macro(&self) -> bool {
+        self.path_tail().is_some_and(|(len, name)| {
+            name == "train" && self.peek_at(len) == Some(&Tok::Punct("!"))
+        })
+    }
+
+    /// `train![item, …]`, folded left into compositions (glyph order: the
+    /// rightmost item runs first). Brackets, parentheses, or braces.
+    fn train_macro(&mut self) -> Result<Train, ParseError> {
+        let at = self.cur();
+        let (len, _) = self.path_tail().expect("checked by at_train_macro");
+        self.pos += len;
+        self.eat("!")?;
+        let close = if self.is_punct("[") {
+            "]"
+        } else if self.is_punct("(") {
+            ")"
+        } else {
+            return self.err("expected `[` after `train!`");
+        };
+        self.pos += 1;
+        let mut items = Vec::new();
+        while !self.is_punct(close) {
+            items.push(self.train_item()?);
+            if self.is_punct(",") {
+                self.pos += 1;
+            } else if !self.is_punct(close) {
+                return self.err(format!("expected `,` or `{close}` in `train!`"));
+            }
+        }
+        self.eat(close)?;
+        let span = Span::new(at.start, self.prev().end);
+        let mut items = items.into_iter();
+        let Some(first) = items.next() else {
+            return Err(ParseError::new(span, "`train![]` needs at least one item"));
+        };
+        let mut t = first;
+        for g in items {
+            t = Train {
+                kind: TrainKind::Compose(Box::new(t), Box::new(g)),
+                span,
+            };
+        }
+        t.span = span;
+        Ok(t)
+    }
+
+    /// item := reduce `(` op [`[` k `]`] `)` | scan `(` … `)` | transpose
+    ///       | shape | reshape `(` r `,` c `)` | `(` fn_value `)`
+    fn train_item(&mut self) -> Result<Train, ParseError> {
+        let at = self.cur();
+        if self.is_punct("(") {
+            return self.fn_value();
+        }
+        let name = self.ident()?;
+        let kind = match name.as_str() {
+            "reduce" | "scan" => {
+                self.eat("(")?;
+                let f = self.macro_op()?;
+                let axis = self.bracket_axis()?.unwrap_or(0);
+                self.eat(")")?;
+                if name == "reduce" {
+                    TrainKind::Reduce(f, axis)
+                } else {
+                    TrainKind::Scan(f, axis)
+                }
+            }
+            "transpose" => TrainKind::Transpose,
+            "shape" => TrainKind::Shape,
+            "reshape" => {
+                self.eat("(")?;
+                let r = self.usize_lit()?;
+                self.eat(",")?;
+                let c = self.usize_lit()?;
+                self.eat(")")?;
+                TrainKind::Reshape(if r == 1 { vec![c] } else { vec![r, c] })
+            }
+            other => {
+                return Err(ParseError::new(
+                    at,
+                    format!(
+                        "`{other}` is not a train item (expected reduce(op[k]), scan(op[k]), \
+                         transpose, shape, reshape(r, c), or a parenthesised function value)"
+                    ),
+                ));
+            }
+        };
+        Ok(Train {
+            kind,
+            span: Span::new(at.start, self.prev().end),
+        })
+    }
+
+    /// An optional `[k]` axis after a macro operator, as in `reduce!(+[1], m)`.
+    fn bracket_axis(&mut self) -> Result<Option<usize>, ParseError> {
+        if !self.is_punct("[") {
+            return Ok(None);
+        }
+        self.pos += 1;
+        let k = self.axis_lit()?;
+        self.eat("]")?;
+        Ok(Some(k))
+    }
+
     fn err<T>(&self, msg: impl Into<String>) -> Result<T, ParseError> {
         Err(ParseError::new(self.cur(), msg))
     }
@@ -352,6 +477,23 @@ impl Parser {
                         ExprKind::Scan(f, axis, Box::new(e))
                     }
                 }
+                named if Func::from_method(named).is_some() => {
+                    let (f, is_reduce) = Func::from_method(named).expect("checked");
+                    let axis = if self.is_punct("::") {
+                        self.turbofish_axis()?
+                    } else {
+                        return self.err(format!(
+                            "`{named}` needs an explicit axis: `.{named}::<0>()` or `.{named}::<1>()`"
+                        ));
+                    };
+                    self.eat("(")?;
+                    self.eat(")")?;
+                    if is_reduce {
+                        ExprKind::Reduce(f, axis, Box::new(e))
+                    } else {
+                        ExprKind::Scan(f, axis, Box::new(e))
+                    }
+                }
                 "transpose" | "shape" => {
                     self.eat("(")?;
                     self.eat(")")?;
@@ -394,9 +536,10 @@ impl Parser {
             e.span = Span::new(at.start, self.prev().end);
             return Ok(e);
         }
-        if self
-            .path_tail()
-            .is_some_and(|(_, name)| FN_VALUES.contains(&name))
+        if self.at_train_macro()
+            || self
+                .path_tail()
+                .is_some_and(|(_, name)| FN_VALUES.contains(&name))
         {
             // `fn_value.call(&x)`
             let t = self.fn_value()?;
@@ -478,10 +621,15 @@ impl Parser {
                 self.pos += 1;
                 self.eat("(")?;
                 let f = self.macro_op()?;
+                let bracket = self.bracket_axis()?;
                 self.eat(",")?;
                 let x = self.postfix()?;
-                let mut axis = 0;
-                if self.is_punct(",") {
+                let mut axis = bracket.unwrap_or(0);
+                if bracket.is_some() {
+                    if self.is_punct(",") {
+                        self.pos += 1;
+                    }
+                } else if self.is_punct(",") {
                     self.pos += 1;
                     if self.peek() == Some(&Tok::Ident("axis".into())) {
                         self.pos += 1;

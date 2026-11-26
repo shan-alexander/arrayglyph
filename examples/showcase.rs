@@ -7,7 +7,9 @@
 //! * as the **verbose Rust** that actually runs.
 //!
 //! The `show!` macro asserts that the pretty-printer's translation of the
-//! glyph text is token-for-token the Rust that runs, so the two can't drift.
+//! glyph text (method style, the default) is token-for-token the Rust that
+//! runs, so the two can't drift. It also prints the macro-style spelling
+//! (`arrayglyph-fmt --style macro`) for comparison.
 //!
 //! The data in `examples/data/weather.csv` is SYNTHETIC sample data made up
 //! for this demo. It is not a record of real temperatures.
@@ -15,7 +17,7 @@
 //! Run with `cargo run --example showcase`.
 
 use arrayglyph::prelude::*;
-use arrayglyph::printer::glyph_to_rust;
+use arrayglyph::printer::{Style, glyph_to_rust, glyph_to_rust_with};
 use arrayglyph::table::Table;
 
 /// 14 days × 5 cities, embedded at compile time (no file I/O, no deps).
@@ -33,8 +35,12 @@ macro_rules! show {
     ($glyph:literal => $($rust:tt)*) => {{
         let printed = glyph_to_rust($glyph).expect("valid glyph");
         assert_eq!(squash(&printed), squash(stringify!($($rust)*)), "printer drifted");
-        println!("  glyph │ {}", $glyph);
-        println!("  rust  │ {printed}");
+        let as_macro = glyph_to_rust_with($glyph, Style::Macro).expect("valid glyph");
+        println!("  glyph  │ {}", $glyph);
+        println!("  rust   │ {printed}");
+        if as_macro != printed {
+            println!("  macro  │ {as_macro}");
+        }
         $($rust)*
     }};
 }
@@ -73,12 +79,12 @@ fn main() {
         labelled(d, cities, row);
     }
 
-    // ── Axis 0 (the default): one result per city ─────────────────────────
-    heading("1 · Per city: reduce down each column (axis 0, the default)");
-    let mean = show!("+⌿x ÷ 14.0" => x.reduce(Add).zip_with(&Array::splat(14.0), Div));
+    // ── Axis 0: one result per city ─────────────────────────────────────────
+    heading("1 · Per city: reduce down each column (axis 0)");
+    let mean = show!("+⌿x ÷ 14.0" => x.sum::<0>().zip_with(&Array::splat(14.0), Div));
     assert_eq!(mean, x.mean::<0>()); // the `mean::<0>()` helper says the same thing
-    let hi = show!("⌈⌿x" => x.reduce(Max));
-    let range = show!("⌈⌿x - ⌊⌿x" => x.reduce(Max).zip_with(&x.reduce(Min), Sub));
+    let hi = show!("⌈⌿x" => x.max::<0>());
+    let range = show!("⌈⌿x - ⌊⌿x" => x.max::<0>().zip_with(&x.min::<0>(), Sub));
     println!();
     header(cities);
     labelled("mean", cities, mean.as_slice());
@@ -86,10 +92,9 @@ fn main() {
     labelled("range", cities, range.as_slice());
 
     // ── Axis 1: one result per day ──────────────────────────────────────────
-    heading("2 · Per day: reduce along each row (axis = 1)");
-    let daily = show!("+/x ÷ 5.0" => x.reduce_axis::<1>(Add).zip_with(&Array::splat(5.0), Div));
-    let spread = show!("⌈/x - ⌊/x"
-        => x.reduce_axis::<1>(Max).zip_with(&x.reduce_axis::<1>(Min), Sub));
+    heading("2 · Per day: reduce along each row (axis 1)");
+    let daily = show!("+/x ÷ 5.0" => x.sum::<1>().zip_with(&Array::splat(5.0), Div));
+    let spread = show!("⌈/x - ⌊/x" => x.max::<1>().zip_with(&x.min::<1>(), Sub));
     println!(
         "\n  {:<14}{:>12}  {:>18}",
         "", "5-city mean", "warmest − coldest"
@@ -99,8 +104,8 @@ fn main() {
     }
 
     // Both axes is two calls, and the order doesn't matter for `+`.
-    let total = show!("+/+⌿x" => x.reduce(Add).reduce_axis::<1>(Add)).item();
-    let total2 = show!("+⌿+/x" => x.reduce_axis::<1>(Add).reduce(Add)).item();
+    let total = show!("+/+⌿x" => x.sum::<0>().sum::<1>()).item();
+    let total2 = show!("+⌿+/x" => x.sum::<1>().sum::<0>()).item();
     assert!((total - total2).abs() < 1e-9);
     println!(
         "  grand mean over all {} readings: {:.2} °C",
@@ -110,7 +115,8 @@ fn main() {
 
     // ── Compose: a reusable pipeline built with ∘ ───────────────────────────
     heading("3 · Compose: weekly means per city, as one train");
-    // Read right to left inside the parentheses:
+    // `train![…]` lists the functions in the same order as the glyph, so
+    // read both right to left:
     //   ⍉      14×5 → 5×14   one row per city
     //   10 7⍴  5×14 → 10×7   one row per city-week
     //   +/     10×7 → 10×1   weekly totals
@@ -118,7 +124,7 @@ fn main() {
     // and then ÷ 7.0 turns totals into means. Every intermediate shape is a
     // type, so a wrong reshape here would not compile.
     let weekly = show!("(5 2⍴ ∘ +/ ∘ 10 7⍴ ∘ ⍉) x ÷ 7.0"
-        => compose(compose(compose(Reshape::<5, 2>, Reduce(Add).axis::<1>()), Reshape::<10, 7>), Transpose)
+        => train![reshape(5, 2), reduce(+[1]), reshape(10, 7), transpose]
             .call(&x)
             .zip_with(&Array::splat(7.0), Div));
     println!(
@@ -142,7 +148,7 @@ fn main() {
     let a = x.zip_with(&mean.broadcast(), Sub);
     // (⌈⌿ ∘ +⍀) a: running total of the anomaly down each column, then the
     // largest value it reaches: how far above "normal" the warmest spell got.
-    let spell = show!("(⌈⌿ ∘ +⍀) a" => compose(Reduce(Max), Scan(Add)).call(&a));
+    let spell = show!("(⌈⌿ ∘ +⍀) a" => train![reduce(max[0]), scan(+[0])].call(&a));
     let peak = cities
         .iter()
         .zip(spell.as_slice())
@@ -157,13 +163,24 @@ fn main() {
     );
 
     // ── The printer goes the other way too ─────────────────────────────────
-    heading("5 · Verbose Rust → glyph");
+    heading("5 · Verbose Rust → glyph (either style, and older spellings)");
     for rust in [
-        "x.reduce(Max).zip_with(&x.reduce(Min), Sub)",
+        "x.max::<0>().zip_with(&x.min::<0>(), Sub)",
+        "reduce!(+[1], x)",
         "reduce!(+, x, axis = 1)",
+        "train![reduce(max[0]), scan(+[0])].call(&a)",
         "compose(Reduce(Max), Scan(Add)).call(&a)",
     ] {
         let glyph = arrayglyph::printer::rust_to_glyph(rust).expect("canonical Rust");
         println!("  {glyph:<14} ⇐ {rust}");
     }
+
+    // ── Profiling ──────────────────────────────────────────────────────────
+    heading("6 · prof!: time one expression (report goes to stderr)");
+    let weekly_again = prof!(
+        glyph = "(5 2⍴ ∘ +/ ∘ 10 7⍴ ∘ ⍉) x",
+        train![reshape(5, 2), reduce(+[1]), reshape(10, 7), transpose].call(&x)
+    );
+    assert_eq!(weekly_again.zip_with(&Array::splat(7.0), Div), weekly);
+    println!("  (see the [prof] line on stderr: location, glyph, Rust, shape 5×2, time)");
 }

@@ -569,13 +569,10 @@ fn print_train(t: &Train) -> String {
             let d: Vec<String> = dims.iter().map(ToString::to_string).collect();
             format!("{}⍴", d.join(" "))
         }
-        TrainKind::Compose(f, g) => {
-            let right = if matches!(g.kind, TrainKind::Compose(..)) {
-                format!("({})", print_train(g))
-            } else {
-                print_train(g)
-            };
-            format!("{} ∘ {}", print_train(f), right)
+        TrainKind::Compose(..) => {
+            // `∘` is associative, so a chain prints flat, whatever its grouping.
+            let parts: Vec<String> = t.parts().into_iter().map(print_train).collect();
+            parts.join(" ∘ ")
         }
     }
 }
