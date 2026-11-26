@@ -603,6 +603,42 @@ impl<T, const ROWS: usize, const COLS: usize> Array<T, ROWS, COLS> {
     {
         <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::scan(self, op)
     }
+
+    /// The arithmetic mean along **axis 0** (down each column): `R × C →
+    /// 1 × C`. In glyphs this is `+⌿m ÷ R`. For integers the division
+    /// truncates, as Rust's `/` does.
+    ///
+    /// ```
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1.0, 10.0], [2.0, 20.0], [6.0, 60.0]]);
+    /// assert_eq!(m.mean().as_slice(), &[3.0, 30.0]);
+    /// ```
+    pub fn mean(&self) -> Array<T, 1, COLS>
+    where
+        T: Clone + core::ops::Add<Output = T> + core::ops::Div<Output = T> + From<u16>,
+    {
+        <Axis<0> as AlongAxis<T, ROWS, COLS>>::mean(self)
+    }
+
+    /// The arithmetic mean along `AXIS`: `0` gives per-column means
+    /// (`1 × C`, the same as [`mean`](Array::mean)), `1` per-row means
+    /// (`R × 1`). The axis length must fit in a `u16`, so that `T::from`
+    /// works for `f32` as well as `f64`.
+    ///
+    /// ```
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1.0, 3.0], [10.0, 30.0]]);
+    /// assert_eq!(m.mean_axis::<0>().as_slice(), &[5.5, 16.5]);
+    /// assert_eq!(m.mean_axis::<1>().as_slice(), &[2.0, 20.0]);
+    /// assert_eq!(Array::vector([2.0_f32, 4.0, 9.0]).mean_axis::<1>().item(), 5.0);
+    /// ```
+    pub fn mean_axis<const AXIS: usize>(&self) -> <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::Reduced
+    where
+        T: Clone + core::ops::Add<Output = T> + core::ops::Div<Output = T> + From<u16>,
+        Axis<AXIS>: AlongAxis<T, ROWS, COLS>,
+    {
+        <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::mean(self)
+    }
 }
 
 /// A type-level axis number, used by [`Array::reduce_axis`] and
@@ -649,10 +685,30 @@ pub trait AlongAxis<T, const ROWS: usize, const COLS: usize> {
     fn scan<O: Dyadic<T>>(a: &Array<T, ROWS, COLS>, op: O) -> Array<T, ROWS, COLS>
     where
         T: Clone;
+    /// Arithmetic mean along this axis: the `+` reduction divided by the
+    /// axis length.
+    fn mean(a: &Array<T, ROWS, COLS>) -> Self::Reduced
+    where
+        T: Clone + core::ops::Add<Output = T> + core::ops::Div<Output = T> + From<u16>;
+}
+
+/// The axis length as a `T`, for means. Checked at compile time to fit `u16`.
+fn axis_len<T: From<u16>, const N: usize>() -> T {
+    const { assert!(N <= u16::MAX as usize, "mean: axis longer than u16::MAX") };
+    T::from(N as u16)
 }
 
 impl<T, const ROWS: usize, const COLS: usize> AlongAxis<T, ROWS, COLS> for Axis<0> {
     type Reduced = Array<T, 1, COLS>;
+
+    fn mean(a: &Array<T, ROWS, COLS>) -> Self::Reduced
+    where
+        T: Clone + core::ops::Add<Output = T> + core::ops::Div<Output = T> + From<u16>,
+    {
+        let n: T = axis_len::<T, ROWS>();
+        let sums = Self::reduce(a, crate::op::Add);
+        sums.map(|x| x / n.clone())
+    }
 
     fn reduce<O: Dyadic<T>>(a: &Array<T, ROWS, COLS>, _op: O) -> Self::Reduced
     where
@@ -702,6 +758,15 @@ impl<T, const ROWS: usize, const COLS: usize> AlongAxis<T, ROWS, COLS> for Axis<
 
 impl<T, const ROWS: usize, const COLS: usize> AlongAxis<T, ROWS, COLS> for Axis<1> {
     type Reduced = Array<T, ROWS, 1>;
+
+    fn mean(a: &Array<T, ROWS, COLS>) -> Self::Reduced
+    where
+        T: Clone + core::ops::Add<Output = T> + core::ops::Div<Output = T> + From<u16>,
+    {
+        let n: T = axis_len::<T, COLS>();
+        let sums = Self::reduce(a, crate::op::Add);
+        sums.map(|x| x / n.clone())
+    }
 
     fn reduce<O: Dyadic<T>>(a: &Array<T, ROWS, COLS>, _op: O) -> Self::Reduced
     where

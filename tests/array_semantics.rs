@@ -219,7 +219,21 @@ fn broadcast_stretches_length_one_axes() {
     assert_eq!(m.broadcast::<2, 3>(), m);
     // Centre each column on its own mean (the showcase's normalisation).
     let f = Array::from_rows([[1.0, 10.0], [3.0, 30.0]]);
-    let col_means = f.reduce(Add).map(|x| x / 2.0);
-    let centred = f.zip_with(&col_means.broadcast(), Sub);
+    let centred = f.zip_with(&f.mean().broadcast(), Sub);
     assert_eq!(centred.as_slice(), &[-1.0, -10.0, 1.0, 10.0]);
+}
+
+#[test]
+fn mean_along_each_axis() {
+    let m = Array::from_rows([[1.0, 2.0, 3.0], [5.0, 6.0, 7.0]]);
+    assert_eq!(m.mean().as_slice(), &[3.0, 4.0, 5.0]);
+    assert_eq!(m.mean_axis::<0>(), m.mean());
+    assert_eq!(m.mean_axis::<1>().as_slice(), &[2.0, 6.0]);
+    // mean = +/ ÷ length
+    assert_eq!(m.mean_axis::<1>(), m.reduce_axis::<1>(Add).map(|x| x / 3.0));
+    // Integers truncate, like Rust's `/`.
+    assert_eq!(
+        Array::from_rows([[1, 2], [2, 5]]).mean().as_slice(),
+        &[1, 3]
+    );
 }
