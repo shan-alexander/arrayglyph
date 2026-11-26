@@ -219,21 +219,21 @@ fn broadcast_stretches_length_one_axes() {
     assert_eq!(m.broadcast::<2, 3>(), m);
     // Centre each column on its own mean (the showcase's normalisation).
     let f = Array::from_rows([[1.0, 10.0], [3.0, 30.0]]);
-    let centred = f.zip_with(&f.mean().broadcast(), Sub);
+    let centred = f.zip_with(&f.mean::<0>().broadcast(), Sub);
     assert_eq!(centred.as_slice(), &[-1.0, -10.0, 1.0, 10.0]);
 }
 
 #[test]
 fn mean_along_each_axis() {
     let m = Array::from_rows([[1.0, 2.0, 3.0], [5.0, 6.0, 7.0]]);
-    assert_eq!(m.mean().as_slice(), &[3.0, 4.0, 5.0]);
-    assert_eq!(m.mean_axis::<0>(), m.mean());
-    assert_eq!(m.mean_axis::<1>().as_slice(), &[2.0, 6.0]);
+    assert_eq!(m.mean::<0>().as_slice(), &[3.0, 4.0, 5.0]);
+    assert_eq!(m.mean::<0>(), m.sum::<0>().map(|x| x / 2.0));
+    assert_eq!(m.mean::<1>().as_slice(), &[2.0, 6.0]);
     // mean = +/ ÷ length
-    assert_eq!(m.mean_axis::<1>(), m.reduce_axis::<1>(Add).map(|x| x / 3.0));
+    assert_eq!(m.mean::<1>(), m.reduce_axis::<1>(Add).map(|x| x / 3.0));
     // Integers truncate, like Rust's `/`.
     assert_eq!(
-        Array::from_rows([[1, 2], [2, 5]]).mean().as_slice(),
+        Array::from_rows([[1, 2], [2, 5]]).mean::<0>().as_slice(),
         &[1, 3]
     );
 }
@@ -272,4 +272,67 @@ fn table_parses_labelled_csv_and_reports_errors() {
         e("d,a,b\nx,1,2\ny,3,z"),
         "csv line 3: `z` is not a valid number"
     );
+}
+
+#[test]
+fn named_axis_methods_match_reduce_axis() {
+    let m = Array::from_rows([[3, 1, 4], [1, 5, 9]]);
+    assert_eq!(m.sum::<0>(), m.reduce_axis::<0>(Add));
+    assert_eq!(m.sum::<1>(), m.reduce_axis::<1>(Add));
+    assert_eq!(m.prod::<0>(), m.reduce_axis::<0>(Mul));
+    assert_eq!(m.prod::<1>().as_slice(), &[12, 45]);
+    assert_eq!(m.max::<0>().as_slice(), &[3, 5, 9]);
+    assert_eq!(m.min::<1>().as_slice(), &[1, 1]);
+    assert_eq!(m.cumsum::<0>(), m.scan_axis::<0>(Add));
+    assert_eq!(m.cumprod::<1>().as_slice(), &[3, 3, 12, 1, 5, 45]);
+    assert_eq!(m.cummax::<1>().as_slice(), &[3, 3, 4, 1, 5, 9]);
+    assert_eq!(m.cummin::<0>().as_slice(), &[3, 1, 4, 1, 1, 4]);
+    // Shapes are part of the type.
+    let _: Array<i32, 1, 3> = m.sum::<0>();
+    let _: Array<i32, 2, 1> = m.sum::<1>();
+    // Vectors use axis 1.
+    assert_eq!(Array::vector([1.5, 2.5]).sum::<1>().item(), 4.0);
+}
+
+#[test]
+fn bracket_axis_macros_are_canonical() {
+    let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    assert_eq!(reduce!(+[0], m), m.sum::<0>());
+    assert_eq!(reduce!(+[1], m), m.sum::<1>());
+    assert_eq!(reduce!(*[1], m), m.prod::<1>());
+    assert_eq!(reduce!(max[0], m), m.max::<0>());
+    assert_eq!(reduce!(min[1], m), m.min::<1>());
+    assert_eq!(reduce!(-[1], m).as_slice(), &[-4, -7]);
+    assert_eq!(
+        reduce!(/[0], Array::from_rows([[8, 9], [2, 3]])).as_slice(),
+        &[4, 3]
+    );
+    assert_eq!(scan!(+[0], m), m.cumsum::<0>());
+    assert_eq!(scan!(*[1], m), m.cumprod::<1>());
+    assert_eq!(scan!(max[1], m), m.cummax::<1>());
+    // Nested and trailing comma.
+    assert_eq!(reduce!(+[1], reduce!(+[0], m),).item(), 21);
+    // Compatibility forms still agree.
+    assert_eq!(reduce!(+, m, axis = 1), reduce!(+[1], m));
+    assert_eq!(reduce!(+, m), reduce!(+[0], m));
+    assert_eq!(scan!(*, m, axis = 1), scan!(*[1], m));
+}
+
+#[test]
+fn prof_returns_its_value() {
+    let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    let s = prof!(m.sum::<0>());
+    assert_eq!(s.as_slice(), &[5, 7, 9]);
+    let s = prof!(glyph = "+/+⌿m", reduce!(+[1], reduce!(+[0], m)).item());
+    assert_eq!(s, 21);
+    assert_eq!(prof!(m.shape()), (2, 3));
+    let line = arrayglyph::prof::format_line(
+        "f.rs",
+        3,
+        Some("⍉m"),
+        "m.transpose()",
+        "3×2",
+        std::time::Duration::from_millis(2),
+    );
+    assert_eq!(line, "[prof] f.rs:3  ⍉m  ⇐  m.transpose()  → 3×2  in 2ms");
 }

@@ -76,7 +76,7 @@ fn main() {
     // ── Axis 0 (the default): one result per city ─────────────────────────
     heading("1 · Per city: reduce down each column (axis 0, the default)");
     let mean = show!("+⌿x ÷ 14.0" => x.reduce(Add).zip_with(&Array::splat(14.0), Div));
-    assert_eq!(mean, x.mean()); // the `mean()` helper says the same thing
+    assert_eq!(mean, x.mean::<0>()); // the `mean::<0>()` helper says the same thing
     let hi = show!("⌈⌿x" => x.reduce(Max));
     let range = show!("⌈⌿x - ⌊⌿x" => x.reduce(Max).zip_with(&x.reduce(Min), Sub));
     println!();

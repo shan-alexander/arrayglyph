@@ -76,3 +76,29 @@ fn axis_function_values_match_methods() {
     let total = compose(Reduce(Add).axis::<1>(), Reduce(Add));
     assert_eq!(total.call(&m).item(), 21);
 }
+
+#[test]
+fn flat_train_macro_matches_nested_compose() {
+    let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    let nested = compose(Reduce(Add).axis::<1>(), Transpose);
+    let flat = train![reduce(+[1]), transpose];
+    assert_eq!(flat.call(&m), nested.call(&m));
+
+    // Rightmost runs first: reshape, then transpose, then sum rows.
+    let three = train![reduce(+[1]), transpose, reshape(2, 3)];
+    assert_eq!(three.call(&iota::<6>()).as_slice(), &[3, 5, 7]);
+    let by_hand = iota::<6>().reshape::<2, 3>().transpose().sum::<1>();
+    assert_eq!(three.call(iota::<6>()), by_hand);
+
+    // Scans, default axis, shape, and parenthesised items.
+    assert_eq!(train![scan(*[1])].call(&m), m.cumprod::<1>());
+    assert_eq!(train![reduce(max)].call(&m), m.max::<0>());
+    assert_eq!(train![shape, transpose].call(&m), (3, 2));
+    let inner = train![transpose];
+    assert_eq!(
+        train![reduce(+[1]), (inner)].call(&m),
+        m.sum::<0>().transpose()
+    );
+    // Trailing comma is fine.
+    assert_eq!(train![transpose, transpose,].call(&m), m);
+}

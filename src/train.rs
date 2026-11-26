@@ -32,7 +32,25 @@
 //! assert_eq!(col_sums.call(&m), m.transpose().reduce_axis::<1>(Add));
 //! ```
 //!
-//! The Rust spelling *is* the ASCII spelling. There is no `compose!` macro.
+//! ## Flat trains: `train![…]`
+//!
+//! Nested `compose(compose(f, g), h)` gets hard to read quickly, so the
+//! canonical spelling (and what the printer emits) is the flat
+//! [`train!`](crate::train!) macro. Items are listed **in glyph order**, so
+//! the rightmost runs first, exactly like `∘`:
+//!
+//! ```
+//! use arrayglyph::prelude::*;
+//! // glyph: (+/ ∘ ⍉ ∘ 2 3⍴) ⍳6
+//! let f = train![reduce(+[1]), transpose, reshape(2, 3)];
+//! assert_eq!(f.call(&iota::<6>()).as_slice(), &[3, 5, 7]);
+//! // the same value, spelled with the lower-level API
+//! let g = compose(compose(Reduce(Add).axis::<1>(), Transpose), Reshape::<2, 3>);
+//! assert_eq!(f.call(&iota::<6>()), g.call(&iota::<6>()));
+//! ```
+//!
+//! [`compose`] and the function-value types stay public as the lower-level
+//! API; `train!` expands to them.
 
 use crate::op::Dyadic;
 use crate::{AlongAxis, Array, Axis};
@@ -69,7 +87,8 @@ pub struct Reduce<F>(pub F);
 
 impl<F> Reduce<F> {
     /// Picks the axis to reduce along: `0` (the default, `f⌿`) or `1`
-    /// (`f/`). Mirrors `reduce!(op, x, axis = AXIS)`.
+    /// (`f/`). Mirrors `reduce!(op[AXIS], x)`; inside [`train!`](crate::train!)
+    /// it is written `reduce(op[AXIS])`.
     ///
     /// ```
     /// use arrayglyph::prelude::*;

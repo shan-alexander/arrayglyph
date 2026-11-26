@@ -604,35 +604,222 @@ impl<T, const ROWS: usize, const COLS: usize> Array<T, ROWS, COLS> {
         <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::scan(self, op)
     }
 
-    /// The arithmetic mean along **axis 0** (down each column): `R × C →
-    /// 1 × C`. In glyphs this is `+⌿m ÷ R`. For integers the division
-    /// truncates, as Rust's `/` does.
+    /// `+⌿m` / `+/m`: the sum along `AXIS`, a named shorthand
+    /// for [`reduce_axis`](Array::reduce_axis)`::<AXIS>(Add)`. `AXIS = 0` goes
+    /// down each column (`R × C → 1 × C`), `AXIS = 1` along each row
+    /// (`R × C → R × 1`). The axis is always written, so the result shape
+    /// is visible in the code and checked at compile time.
+    ///
+    /// This is the printer's default (method-style) output for `+⌿` and
+    /// `+/`.
     ///
     /// ```
     /// use arrayglyph::Array;
-    /// let m = Array::from_rows([[1.0, 10.0], [2.0, 20.0], [6.0, 60.0]]);
-    /// assert_eq!(m.mean().as_slice(), &[3.0, 30.0]);
+    /// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    /// assert_eq!(m.sum::<0>().as_slice(), &[5, 7, 9]); // +⌿m
+    /// assert_eq!(m.sum::<1>().as_slice(), &[6, 15]); // +/m
     /// ```
-    pub fn mean(&self) -> Array<T, 1, COLS>
+    ///
+    /// ```compile_fail,E0277
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1, 2], [3, 4]]);
+    /// let _ = m.sum::<2>(); // ERROR: arrays have axes 0 and 1 only
+    /// ```
+    pub fn sum<const AXIS: usize>(&self) -> <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::Reduced
     where
-        T: Clone + core::ops::Add<Output = T> + core::ops::Div<Output = T> + From<u16>,
+        T: Clone + core::ops::Add<Output = T>,
+        Axis<AXIS>: AlongAxis<T, ROWS, COLS>,
     {
-        <Axis<0> as AlongAxis<T, ROWS, COLS>>::mean(self)
+        <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::reduce(self, crate::op::Add)
+    }
+
+    /// `×⌿m` / `×/m`: the product along `AXIS`, a named shorthand
+    /// for [`reduce_axis`](Array::reduce_axis)`::<AXIS>(Mul)`. `AXIS = 0` goes
+    /// down each column (`R × C → 1 × C`), `AXIS = 1` along each row
+    /// (`R × C → R × 1`). The axis is always written, so the result shape
+    /// is visible in the code and checked at compile time.
+    ///
+    /// This is the printer's default (method-style) output for `×⌿` and
+    /// `×/`.
+    ///
+    /// ```
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    /// assert_eq!(m.prod::<0>().as_slice(), &[4, 10, 18]); // ×⌿m
+    /// assert_eq!(m.prod::<1>().as_slice(), &[6, 120]); // ×/m
+    /// ```
+    ///
+    /// ```compile_fail,E0277
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1, 2], [3, 4]]);
+    /// let _ = m.prod::<2>(); // ERROR: arrays have axes 0 and 1 only
+    /// ```
+    pub fn prod<const AXIS: usize>(&self) -> <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::Reduced
+    where
+        T: Clone + core::ops::Mul<Output = T>,
+        Axis<AXIS>: AlongAxis<T, ROWS, COLS>,
+    {
+        <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::reduce(self, crate::op::Mul)
+    }
+
+    /// `⌈⌿m` / `⌈/m`: the maximum along `AXIS`, a named shorthand
+    /// for [`reduce_axis`](Array::reduce_axis)`::<AXIS>(Max)`. `AXIS = 0` goes
+    /// down each column (`R × C → 1 × C`), `AXIS = 1` along each row
+    /// (`R × C → R × 1`). The axis is always written, so the result shape
+    /// is visible in the code and checked at compile time.
+    ///
+    /// Inherent, so it takes precedence over [`Ord::max`]-style methods.
+    ///
+    /// This is the printer's default (method-style) output for `⌈⌿` and
+    /// `⌈/`.
+    ///
+    /// ```
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    /// assert_eq!(m.max::<0>().as_slice(), &[4, 5, 6]); // ⌈⌿m
+    /// assert_eq!(m.max::<1>().as_slice(), &[3, 6]); // ⌈/m
+    /// ```
+    ///
+    /// ```compile_fail,E0277
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1, 2], [3, 4]]);
+    /// let _ = m.max::<2>(); // ERROR: arrays have axes 0 and 1 only
+    /// ```
+    pub fn max<const AXIS: usize>(&self) -> <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::Reduced
+    where
+        T: Clone + PartialOrd,
+        Axis<AXIS>: AlongAxis<T, ROWS, COLS>,
+    {
+        <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::reduce(self, crate::op::Max)
+    }
+
+    /// `⌊⌿m` / `⌊/m`: the minimum along `AXIS`, a named shorthand
+    /// for [`reduce_axis`](Array::reduce_axis)`::<AXIS>(Min)`. `AXIS = 0` goes
+    /// down each column (`R × C → 1 × C`), `AXIS = 1` along each row
+    /// (`R × C → R × 1`). The axis is always written, so the result shape
+    /// is visible in the code and checked at compile time.
+    ///
+    /// This is the printer's default (method-style) output for `⌊⌿` and
+    /// `⌊/`.
+    ///
+    /// ```
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    /// assert_eq!(m.min::<0>().as_slice(), &[1, 2, 3]); // ⌊⌿m
+    /// assert_eq!(m.min::<1>().as_slice(), &[1, 4]); // ⌊/m
+    /// ```
+    ///
+    /// ```compile_fail,E0277
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1, 2], [3, 4]]);
+    /// let _ = m.min::<2>(); // ERROR: arrays have axes 0 and 1 only
+    /// ```
+    pub fn min<const AXIS: usize>(&self) -> <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::Reduced
+    where
+        T: Clone + PartialOrd,
+        Axis<AXIS>: AlongAxis<T, ROWS, COLS>,
+    {
+        <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::reduce(self, crate::op::Min)
+    }
+
+    /// `+⍀m` / `+\m`: the running sum along `AXIS`, a named
+    /// shorthand for [`scan_axis`](Array::scan_axis)`::<AXIS>(Add)`. The shape
+    /// doesn't change. This is the printer's default output for `+⍀`
+    /// and `+\`.
+    ///
+    /// ```
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    /// assert_eq!(m.cumsum::<0>().as_slice(), &[1, 2, 3, 5, 7, 9]); // +⍀m
+    /// assert_eq!(m.cumsum::<1>().as_slice(), &[1, 3, 6, 4, 9, 15]); // +\m
+    /// ```
+    pub fn cumsum<const AXIS: usize>(&self) -> Self
+    where
+        T: Clone + core::ops::Add<Output = T>,
+        Axis<AXIS>: AlongAxis<T, ROWS, COLS>,
+    {
+        <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::scan(self, crate::op::Add)
+    }
+
+    /// `×⍀m` / `×\m`: the running product along `AXIS`, a named
+    /// shorthand for [`scan_axis`](Array::scan_axis)`::<AXIS>(Mul)`. The shape
+    /// doesn't change. This is the printer's default output for `×⍀`
+    /// and `×\`.
+    ///
+    /// ```
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    /// assert_eq!(m.cumprod::<0>().as_slice(), &[1, 2, 3, 4, 10, 18]); // ×⍀m
+    /// assert_eq!(m.cumprod::<1>().as_slice(), &[1, 2, 6, 4, 20, 120]); // ×\m
+    /// ```
+    pub fn cumprod<const AXIS: usize>(&self) -> Self
+    where
+        T: Clone + core::ops::Mul<Output = T>,
+        Axis<AXIS>: AlongAxis<T, ROWS, COLS>,
+    {
+        <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::scan(self, crate::op::Mul)
+    }
+
+    /// `⌈⍀m` / `⌈\m`: the running maximum along `AXIS`, a named
+    /// shorthand for [`scan_axis`](Array::scan_axis)`::<AXIS>(Max)`. The shape
+    /// doesn't change. This is the printer's default output for `⌈⍀`
+    /// and `⌈\`.
+    ///
+    /// ```
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    /// assert_eq!(m.cummax::<0>().as_slice(), &[1, 2, 3, 4, 5, 6]); // ⌈⍀m
+    /// assert_eq!(m.cummax::<1>().as_slice(), &[1, 2, 3, 4, 5, 6]); // ⌈\m
+    /// ```
+    pub fn cummax<const AXIS: usize>(&self) -> Self
+    where
+        T: Clone + PartialOrd,
+        Axis<AXIS>: AlongAxis<T, ROWS, COLS>,
+    {
+        <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::scan(self, crate::op::Max)
+    }
+
+    /// `⌊⍀m` / `⌊\m`: the running minimum along `AXIS`, a named
+    /// shorthand for [`scan_axis`](Array::scan_axis)`::<AXIS>(Min)`. The shape
+    /// doesn't change. This is the printer's default output for `⌊⍀`
+    /// and `⌊\`.
+    ///
+    /// ```
+    /// use arrayglyph::Array;
+    /// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    /// assert_eq!(m.cummin::<0>().as_slice(), &[1, 2, 3, 1, 2, 3]); // ⌊⍀m
+    /// assert_eq!(m.cummin::<1>().as_slice(), &[1, 1, 1, 4, 4, 4]); // ⌊\m
+    /// ```
+    pub fn cummin<const AXIS: usize>(&self) -> Self
+    where
+        T: Clone + PartialOrd,
+        Axis<AXIS>: AlongAxis<T, ROWS, COLS>,
+    {
+        <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::scan(self, crate::op::Min)
     }
 
     /// The arithmetic mean along `AXIS`: `0` gives per-column means
-    /// (`1 × C`, the same as [`mean`](Array::mean)), `1` per-row means
-    /// (`R × 1`). The axis length must fit in a `u16`, so that `T::from`
+    /// (`R × C → 1 × C`), `1` per-row means (`R × C → R × 1`). The axis is
+    /// always written (`m.mean::<0>()`), like the other named reductions.
+    /// In glyphs, `+⌿m ÷ R`. For integers the division truncates, as Rust's
+    /// `/` does. The axis length must fit in a `u16`, so that `T::from`
     /// works for `f32` as well as `f64`.
     ///
     /// ```
     /// use arrayglyph::Array;
     /// let m = Array::from_rows([[1.0, 3.0], [10.0, 30.0]]);
-    /// assert_eq!(m.mean_axis::<0>().as_slice(), &[5.5, 16.5]);
-    /// assert_eq!(m.mean_axis::<1>().as_slice(), &[2.0, 20.0]);
-    /// assert_eq!(Array::vector([2.0_f32, 4.0, 9.0]).mean_axis::<1>().item(), 5.0);
+    /// assert_eq!(m.mean::<0>().as_slice(), &[5.5, 16.5]);
+    /// assert_eq!(m.mean::<1>().as_slice(), &[2.0, 20.0]);
+    /// assert_eq!(Array::vector([2.0_f32, 4.0, 9.0]).mean::<1>().item(), 5.0);
     /// ```
-    pub fn mean_axis<const AXIS: usize>(&self) -> <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::Reduced
+    ///
+    /// A vector's axis 0 has length 1, so it needs `mean::<1>()`:
+    ///
+    /// ```compile_fail,E0080
+    /// use arrayglyph::Array;
+    /// let _ = Array::vector([1.0, 2.0]).mean::<0>(); // ERROR: use axis 1
+    /// ```
+    pub fn mean<const AXIS: usize>(&self) -> <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::Reduced
     where
         T: Clone + core::ops::Add<Output = T> + core::ops::Div<Output = T> + From<u16>,
         Axis<AXIS>: AlongAxis<T, ROWS, COLS>,
@@ -642,8 +829,9 @@ impl<T, const ROWS: usize, const COLS: usize> Array<T, ROWS, COLS> {
 }
 
 /// A type-level axis number, used by [`Array::reduce_axis`] and
-/// [`Array::scan_axis`] (and by `axis = N` in [`reduce!`](crate::reduce) and
-/// [`scan!`](crate::scan)). `Axis<0>` runs down the columns (the rows axis,
+/// [`Array::scan_axis`] (and by the bracketed axis in [`reduce!`](crate::reduce)`(+[N], m)`
+/// and [`scan!`](crate::scan), and the named methods such as
+/// [`Array::sum`]). `Axis<0>` runs down the columns (the rows axis,
 /// like APL's first axis `⌿`) and `Axis<1>` runs along each row (APL's last
 /// axis `/`). Only those two implement [`AlongAxis`].
 ///
@@ -718,7 +906,7 @@ impl<T, const ROWS: usize, const COLS: usize> AlongAxis<T, ROWS, COLS> for Axis<
             assert!(
                 ROWS >= 2,
                 "reduce along axis 0 needs at least 2 rows: a 1-row array (such as a \
-                 vector) is unchanged by it; use axis = 1"
+                 vector) is unchanged by it; use axis 1, e.g. `reduce!(+[1], v)` or `v.sum::<1>()`"
             )
         };
         let mut rows = a.rows();
@@ -741,7 +929,7 @@ impl<T, const ROWS: usize, const COLS: usize> AlongAxis<T, ROWS, COLS> for Axis<
             assert!(
                 ROWS >= 2,
                 "scan along axis 0 needs at least 2 rows: a 1-row array (such as a \
-                 vector) is unchanged by it; use axis = 1"
+                 vector) is unchanged by it; use axis 1, e.g. `reduce!(+[1], v)` or `v.sum::<1>()`"
             )
         };
         let mut data: Vec<T> = Vec::with_capacity(ROWS * COLS);
@@ -776,7 +964,7 @@ impl<T, const ROWS: usize, const COLS: usize> AlongAxis<T, ROWS, COLS> for Axis<
             assert!(
                 COLS >= 2,
                 "reduce along axis 1 needs at least 2 columns: a 1-column array is \
-                 unchanged by it; use axis = 0"
+                 unchanged by it; use axis 0, e.g. `reduce!(+[0], m)` or `m.sum::<0>()`"
             )
         };
         Array {
@@ -795,7 +983,7 @@ impl<T, const ROWS: usize, const COLS: usize> AlongAxis<T, ROWS, COLS> for Axis<
             assert!(
                 COLS >= 2,
                 "scan along axis 1 needs at least 2 columns: a 1-column array is \
-                 unchanged by it; use axis = 0"
+                 unchanged by it; use axis 0, e.g. `reduce!(+[0], m)` or `m.sum::<0>()`"
             )
         };
         let mut data = Vec::with_capacity(ROWS * COLS);
