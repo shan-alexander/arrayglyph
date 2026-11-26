@@ -981,19 +981,32 @@ impl<T: fmt::Debug, const ROWS: usize, const COLS: usize> fmt::Debug for Array<T
 impl<T: fmt::Display, const ROWS: usize, const COLS: usize> fmt::Display for Array<T, ROWS, COLS> {
     /// Prints APL-style: right-aligned columns, one line per row.
     ///
+    /// A precision (`{:.2}`) is applied to every element, which keeps
+    /// floating-point tables readable, and a width (`{:6}`) sets the minimum
+    /// column width.
+    ///
     /// ```
     /// use arrayglyph::Array;
     /// let m = Array::from_rows([[1, 20], [300, 4]]);
     /// assert_eq!(m.to_string(), "  1 20\n300  4");
+    ///
+    /// let t = Array::from_rows([[1.0, 2.25], [-0.5, 10.0]]);
+    /// assert_eq!(format!("{t:.1}"), " 1.0  2.2\n-0.5 10.0");
+    /// assert_eq!(format!("{:4}", Array::vector([1, 2])), "   1    2");
     /// ```
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let cells: Vec<String> = self.data.iter().map(ToString::to_string).collect();
+        let cells: Vec<String> = match f.precision() {
+            Some(p) => self.data.iter().map(|x| format!("{x:.p$}")).collect(),
+            None => self.data.iter().map(ToString::to_string).collect(),
+        };
+        let min_width = f.width().unwrap_or(0);
         let widths: Vec<usize> = (0..COLS)
             .map(|c| {
                 (0..ROWS)
                     .map(|r| cells[r * COLS + c].chars().count())
                     .max()
                     .unwrap_or(0)
+                    .max(min_width)
             })
             .collect();
         for r in 0..ROWS {

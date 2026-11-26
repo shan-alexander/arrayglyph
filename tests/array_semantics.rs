@@ -190,3 +190,12 @@ fn display_is_apl_like() {
     let m = Array::from_rows([[1, -20], [300, 4]]);
     assert_eq!(m.to_string(), "  1 -20\n300   4");
 }
+
+#[test]
+fn display_honours_precision_and_width() {
+    let m = Array::from_rows([[1.5, -2.0], [10.125, 0.0]]);
+    assert_eq!(format!("{m:.2}"), " 1.50 -2.00\n10.12  0.00");
+    assert_eq!(format!("{m:6.1}"), "   1.5   -2.0\n  10.1    0.0");
+    // Without a precision, elements print as Display does.
+    assert_eq!(m.to_string(), "   1.5 -2\n10.125  0");
+}
