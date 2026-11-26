@@ -7,6 +7,8 @@ APL-inspired, compile-time-shaped arrays for Rust. *(Project codename: Iota.)*
   **compile errors**.
 * **`reduce!(+, x)` / `scan!(max, x)`** are the glyphs `+/x` and `⌈\x`. They
   work along the last axis as **left folds**, left to right like Rust.
+* **`∘` composes functions explicitly**: `(+/ ∘ ⍉) m` is
+  `compose(Reduce(Add), Transpose).call(&m)`.
 * **A pretty-printer and the `arrayglyph-fmt` CLI** convert dense glyph
   notation to verbose Rust and back.
 
@@ -38,6 +40,10 @@ let q = p.matmul(&p.transpose());        // (2×3)·(3×2) → 2×2
 // let bad = p.matmul(&p);               // compile error: inner dims 3 ≠ 2
 // let bad = iota::<6>().reshape::<4, 2>(); // compile error: 6 ≠ 8
 assert_eq!(q.shape(), (2, 2));
+
+// Explicit composition: (+/ ∘ ⍉) applies ⍉, then +/ (column sums)
+let col_sums = compose(Reduce(Add), Transpose);
+assert_eq!(col_sums.call(&m).as_slice(), &[4, 6, 13]);
 ```
 
 Macro operators are ASCII, because Rust's lexer rejects `×`, `⌈`, and similar
@@ -52,6 +58,9 @@ a.reduce(Add).zip_with(&b, Mul)
 Array::splat(2).zip_with(&Array::splat(3), Mul).zip_with(&x, Add)
 iota::<6>().reshape::<2, 3>()
 a.matmul(&b.transpose())
+
+$ arrayglyph-fmt '(+/ ∘ ⍉) m'
+compose(Reduce(Add), Transpose).call(&m)
 
 $ arrayglyph-fmt --to-glyph 'reduce!(max, v)' 'v.zip_with(&Array::splat(2), Mul).scan(Add)'
 ⌈/v
@@ -68,7 +77,7 @@ precedence**. This is a deliberate break from APL's right-to-left rule:
 | loosest | `+ -` | `a - b - c` = `(a - b) - c` |
 | | `× ÷ +.×` | `2 × 3 + x` = `(2 × 3) + x` |
 | | `⌈ ⌊` (like a method call) | `a ⌈ b + c` = `(a ⌈ b) + c` |
-| tightest | prefix `f/ f\ ⍴ ⍉ r c⍴ ⍳n` | `+/a × b` = `(+/a) × b` |
+| tightest | prefix `f/ f\ ⍴ ⍉ r c⍴ ⍳n`, `(f ∘ g) x` | `+/a × b` = `(+/a) × b` |
 
 So the dot product is written `+/(a × b)`. Reductions are left folds:
 `-/1 2 3` is `(1 - 2) - 3`, which is `-4`.
@@ -81,6 +90,7 @@ So the dot product is written `+/(a × b)`. Reductions are left folds:
 | `⍳n`, `⍴x`, `⍉x` | `iota::<n>()`, `x.shape()`, `x.transpose()` |
 | `r c⍴x` | `x.reshape::<r, c>()` |
 | `a +.× b` | `a.matmul(&b)` |
+| `(f ∘ g) x` | `compose(F, G).call(&x)` with `F`, `G` in `Reduce(Op) Scan(Op) Transpose Shape Reshape::<r, c>` |
 | `1 2 3`, `¯3` | `Array::vector([1, 2, 3])`, `-3` |
 
 ## Commands

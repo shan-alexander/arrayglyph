@@ -1,6 +1,6 @@
 //! Canonical verbose Rust: emitter and a parser for exactly the emitted subset.
 
-use super::{Expr, ExprKind, Func, LineIndex, ParseError, Span};
+use super::{Expr, ExprKind, Func, LineIndex, ParseError, Span, Train, TrainKind};
 
 pub(super) fn print(e: &Expr) -> String {
     match &e.kind {
@@ -21,8 +21,27 @@ pub(super) fn print(e: &Expr) -> String {
         ExprKind::Reduce(f, x) => format!("{}.reduce({})", print(x), f.rust_name()),
         ExprKind::Scan(f, x) => format!("{}.scan({})", print(x), f.rust_name()),
         ExprKind::MatMul(a, b) => format!("{}.matmul(&{})", print(a), print(b)),
+        ExprKind::Apply(t, x) => format!("{}.call(&{})", print_train(t), print(x)),
     }
 }
+
+fn print_train(t: &Train) -> String {
+    match &t.kind {
+        TrainKind::Reduce(f) => format!("Reduce({})", f.rust_name()),
+        TrainKind::Scan(f) => format!("Scan({})", f.rust_name()),
+        TrainKind::Shape => "Shape".to_string(),
+        TrainKind::Transpose => "Transpose".to_string(),
+        TrainKind::Reshape(dims) => match dims.as_slice() {
+            [n] => format!("Reshape::<1, {n}>"),
+            [r, c] => format!("Reshape::<{r}, {c}>"),
+            _ => unreachable!("parser guarantees rank 1 or 2"),
+        },
+        TrainKind::Compose(f, g) => format!("compose({}, {})", print_train(f), print_train(g)),
+    }
+}
+
+/// Names of the `arrayglyph::train` function values.
+const FN_VALUES: [&str; 6] = ["compose", "Reduce", "Scan", "Transpose", "Shape", "Reshape"];
 
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
@@ -99,7 +118,83 @@ impl Parser {
             .map_or(self.eof, |&(s, _)| s)
     }
     fn peek(&self) -> Option<&Tok> {
-        self.toks.get(self.pos).map(|(_, t)| t)
+        self.peek_at(0)
+    }
+    fn peek_at(&self, k: usize) -> Option<&Tok> {
+        self.toks.get(self.pos + k).map(|(_, t)| t)
+    }
+    /// The last segment of the `a::b::c` path at the cursor, without
+    /// consuming it. A `::` before `<` (turbofish) ends the path.
+    fn path_tail(&self) -> Option<(usize, &str)> {
+        let mut k = 0;
+        let mut last = match self.peek_at(0) {
+            Some(Tok::Ident(s)) => s.as_str(),
+            _ => return None,
+        };
+        while self.peek_at(k + 1) == Some(&Tok::Punct("::")) {
+            match self.peek_at(k + 2) {
+                Some(Tok::Ident(s)) => {
+                    last = s.as_str();
+                    k += 2;
+                }
+                _ => break,
+            }
+        }
+        Some((k + 1, last))
+    }
+    /// fn_value := path::(compose `(` fn_value `,` fn_value `)` | Reduce `(` op `)`
+    ///           | Scan `(` op `)` | Transpose | Shape | Reshape `::<` r `,` c `>`)
+    fn fn_value(&mut self) -> Result<Train, ParseError> {
+        let at = self.cur();
+        let Some((len, name)) = self.path_tail() else {
+            return self.err("expected a function value (e.g. `Reduce(Add)`)");
+        };
+        let name = name.to_string();
+        self.pos += len;
+        let kind = match name.as_str() {
+            "compose" => {
+                self.eat("(")?;
+                let f = self.fn_value()?;
+                self.eat(",")?;
+                let g = self.fn_value()?;
+                if self.is_punct(",") {
+                    self.pos += 1;
+                }
+                self.eat(")")?;
+                TrainKind::Compose(Box::new(f), Box::new(g))
+            }
+            "Reduce" | "Scan" => {
+                self.eat("(")?;
+                let f = self.op_path()?;
+                self.eat(")")?;
+                if name == "Reduce" {
+                    TrainKind::Reduce(f)
+                } else {
+                    TrainKind::Scan(f)
+                }
+            }
+            "Transpose" => TrainKind::Transpose,
+            "Shape" => TrainKind::Shape,
+            "Reshape" => {
+                self.eat("::")?;
+                self.eat("<")?;
+                let r = self.usize_lit()?;
+                self.eat(",")?;
+                let c = self.usize_lit()?;
+                self.eat(">")?;
+                TrainKind::Reshape(if r == 1 { vec![c] } else { vec![r, c] })
+            }
+            other => {
+                return Err(ParseError::new(
+                    Span::new(at.start, self.prev().end),
+                    format!("`{other}` is not an arrayglyph function value"),
+                ));
+            }
+        };
+        Ok(Train {
+            kind,
+            span: Span::new(at.start, self.prev().end),
+        })
     }
     fn err<T>(&self, msg: impl Into<String>) -> Result<T, ParseError> {
         Err(ParseError::new(self.cur(), msg))
@@ -259,6 +354,36 @@ impl Parser {
             self.eat(")")?;
             e.span = Span::new(at.start, self.prev().end);
             return Ok(e);
+        }
+        if self
+            .path_tail()
+            .is_some_and(|(_, name)| FN_VALUES.contains(&name))
+        {
+            // `fn_value.call(&x)`
+            let t = self.fn_value()?;
+            self.eat(".")?;
+            let call_at = self.cur();
+            if self.ident()? != "call" {
+                return Err(ParseError::new(
+                    call_at,
+                    "expected `.call(&…)` on a function value",
+                ));
+            }
+            self.eat("(")?;
+            if self.is_punct("&") {
+                self.pos += 1;
+            }
+            let x = Box::new(self.postfix()?);
+            self.eat(")")?;
+            let kind = match t.kind {
+                TrainKind::Reduce(f) => ExprKind::Reduce(f, x),
+                TrainKind::Scan(f) => ExprKind::Scan(f, x),
+                TrainKind::Shape => ExprKind::Shape(x),
+                TrainKind::Transpose => ExprKind::Transpose(x),
+                TrainKind::Reshape(d) => ExprKind::Reshape(d, x),
+                TrainKind::Compose(..) => ExprKind::Apply(t, x),
+            };
+            return Ok(self.node(kind, at));
         }
         let name = self.ident()?;
         let kind = match name.as_str() {

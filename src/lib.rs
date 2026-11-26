@@ -6,6 +6,8 @@
 //!   mismatches in elementwise ops, `matmul`, and `reshape` are **compile errors**.
 //! * [`reduce!`] and [`scan!`] are `f/` and `f\` along the last axis, as
 //!   left folds (left to right, like Rust).
+//! * [`train`] has function values and the explicit composition operator
+//!   `∘`: `(+/ ∘ ⍉) m` is `compose(Reduce(Add), Transpose).call(&m)`.
 //! * [`printer`] translates glyph notation (`+/a × b`) to verbose Rust
 //!   (`a.zip_with(&b, Mul).reduce(Add)`) and back.
 //!
@@ -25,6 +27,7 @@ mod array;
 mod macros;
 pub mod op;
 pub mod printer;
+pub mod train;
 pub mod view;
 
 pub use array::{Array, ShapeError, Vector, iota};
@@ -38,6 +41,7 @@ pub use array::{Array, ShapeError, Vector, iota};
 /// ```
 pub mod prelude {
     pub use crate::op::{Add, Div, Dyadic, Max, Min, Mul, Sub};
+    pub use crate::train::{Compose, Monadic, Reduce, Reshape, Scan, Shape, Transpose, compose};
     pub use crate::view::Col;
     pub use crate::{Array, ShapeError, Vector, iota, reduce, scan};
 }

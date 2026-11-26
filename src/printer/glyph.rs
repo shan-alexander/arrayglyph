@@ -8,10 +8,10 @@
 //! | `Sum` | `a + b`, `a - b` | left |
 //! | `Product` | `a × b`, `a ÷ b`, `a +.× b` | left |
 //! | `MaxMin` | `a ⌈ b`, `a ⌊ b` | left |
-//! | `Prefix` | `f/x`, `f\x`, `⍴x`, `⍉x`, `r c⍴x`, `⍳n` | nests to the right |
+//! | `Prefix` | `f/x`, `f\x`, `⍴x`, `⍉x`, `r c⍴x`, `⍳n`, `(f ∘ g) x` | nests to the right |
 //! | `Atom` | `x`, `3`, `1 2 3`, `( … )` | — |
 
-use super::{Expr, ExprKind, Func, LineIndex, ParseError, Span};
+use super::{Expr, ExprKind, Func, LineIndex, ParseError, Span, Train, TrainKind};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
@@ -26,6 +26,8 @@ enum Tok {
     Transpose,
     /// `+.×`
     PlusTimes,
+    /// `∘` (compose)
+    Jot,
     LParen,
     RParen,
 }
@@ -84,6 +86,13 @@ fn lex(src: &str, idx: &LineIndex<'_>) -> Result<Vec<(Span, Tok)>, ParseError> {
             '⍳' => Tok::Iota,
             '⍴' => Tok::Rho,
             '⍉' => Tok::Transpose,
+            '∘' if peek(1) == Some('.') => {
+                return Err(ParseError::new(
+                    idx.span(pos, end_of(i + 2)),
+                    "outer product `∘.f` is not supported yet (Phase 2)",
+                ));
+            }
+            '∘' => Tok::Jot,
             '(' => Tok::LParen,
             ')' => Tok::RParen,
             _ => match Func::from_glyph(c) {
@@ -119,7 +128,7 @@ pub(super) enum Prec {
     Product,
     /// `⌈ ⌊`
     MaxMin,
-    /// `f/x f\x ⍴x ⍉x r c⍴x ⍳n`
+    /// `f/x f\x ⍴x ⍉x r c⍴x ⍳n (f ∘ g) x`
     Prefix,
     /// identifiers, numbers, strands, parenthesised expressions
     Atom,
@@ -156,15 +165,15 @@ enum FnAtom {
 }
 
 impl FnAtom {
-    fn apply(self, x: Expr) -> ExprKind {
-        let x = Box::new(x);
-        match self {
-            FnAtom::Reduce(f) => ExprKind::Reduce(f, x),
-            FnAtom::Scan(f) => ExprKind::Scan(f, x),
-            FnAtom::Shape => ExprKind::Shape(x),
-            FnAtom::Transpose => ExprKind::Transpose(x),
-            FnAtom::Reshape(d) => ExprKind::Reshape(d, x),
-        }
+    fn into_train(self, span: Span) -> Train {
+        let kind = match self {
+            FnAtom::Reduce(f) => TrainKind::Reduce(f),
+            FnAtom::Scan(f) => TrainKind::Scan(f),
+            FnAtom::Shape => TrainKind::Shape,
+            FnAtom::Transpose => TrainKind::Transpose,
+            FnAtom::Reshape(d) => TrainKind::Reshape(d),
+        };
+        Train { kind, span }
     }
 }
 
@@ -303,13 +312,58 @@ impl Parser {
         Ok(Some((atom, Span::new(at.start, self.prev().end))))
     }
 
-    /// prefix := fn_atom prefix | `⍳` NUM | primary
+    /// train_atom := fn_atom | `(` train `)`
+    ///
+    /// Returns `None`, consuming nothing, if the cursor doesn't start a
+    /// function. `(` is ambiguous between `(f ∘ g)` and `(expr)`, so it
+    /// backtracks.
+    fn train_atom(&mut self) -> Result<Option<Train>, ParseError> {
+        if self.peek() == Some(&Tok::LParen) {
+            let save = self.pos;
+            let open = self.cur();
+            self.pos += 1;
+            if let Ok(Some(mut t)) = self.train() {
+                if self.peek() == Some(&Tok::RParen) {
+                    self.pos += 1;
+                    t.span = Span::new(open.start, self.prev().end);
+                    return Ok(Some(t));
+                }
+            }
+            self.pos = save;
+            return Ok(None);
+        }
+        Ok(self.fn_atom()?.map(|(f, span)| f.into_train(span)))
+    }
+
+    /// train := train_atom (`∘` train_atom)*   (left-associative)
+    fn train(&mut self) -> Result<Option<Train>, ParseError> {
+        let Some(mut t) = self.train_atom()? else {
+            return Ok(None);
+        };
+        while self.peek() == Some(&Tok::Jot) {
+            self.pos += 1;
+            let Some(g) = self.train_atom()? else {
+                return Err(ParseError::new(
+                    self.cur(),
+                    "expected a function after `∘` (e.g. `+/`, `⍉`, `2 3⍴`)",
+                ));
+            };
+            let span = Span::new(t.span.start, g.span.end);
+            t = Train {
+                kind: TrainKind::Compose(Box::new(t), Box::new(g)),
+                span,
+            };
+        }
+        Ok(Some(t))
+    }
+
+    /// prefix := train prefix | `⍳` NUM | primary
     fn prefix(&mut self) -> Result<Expr, ParseError> {
         let at = self.cur();
-        if let Some((f, fspan)) = self.fn_atom()? {
+        if let Some(t) = self.train()? {
             let x = self.prefix()?;
-            let xs = x.span;
-            return Ok(node(f.apply(x), fspan, xs));
+            let span = Span::new(at.start, x.span.end);
+            return Ok(Expr::new(apply_train(t, x), span));
         }
         if self.peek() == Some(&Tok::Iota) {
             self.bump();
@@ -373,6 +427,20 @@ impl Parser {
     }
 }
 
+/// Applies a train. A lone function becomes the ordinary prefix node, so
+/// `(+/) x` and `+/x` parse to the same tree.
+fn apply_train(t: Train, x: Expr) -> ExprKind {
+    let x = Box::new(x);
+    match t.kind {
+        TrainKind::Reduce(f) => ExprKind::Reduce(f, x),
+        TrainKind::Scan(f) => ExprKind::Scan(f, x),
+        TrainKind::Shape => ExprKind::Shape(x),
+        TrainKind::Transpose => ExprKind::Transpose(x),
+        TrainKind::Reshape(d) => ExprKind::Reshape(d, x),
+        TrainKind::Compose(..) => ExprKind::Apply(t, x),
+    }
+}
+
 pub(super) fn parse(src: &str) -> Result<Expr, ParseError> {
     let idx = LineIndex::new(src);
     let toks = lex(src, &idx)?;
@@ -414,7 +482,8 @@ pub(super) fn prec(e: &Expr) -> Prec {
         | ExprKind::Shape(_)
         | ExprKind::Transpose(_)
         | ExprKind::Reshape(..)
-        | ExprKind::Iota(_) => Prec::Prefix,
+        | ExprKind::Iota(_)
+        | ExprKind::Apply(..) => Prec::Prefix,
         ExprKind::Ident(_) | ExprKind::Scalar(_) | ExprKind::Strand(_) => Prec::Atom,
     }
 }
@@ -446,5 +515,29 @@ pub(super) fn print(e: &Expr) -> String {
         ExprKind::MatMul(a, b) => format!("{} +.× {}", at(a, p), at(b, p.tighter())),
         ExprKind::Reduce(f, x) => format!("{}/{}", f.glyph(), at(x, Prec::Prefix)),
         ExprKind::Scan(f, x) => format!("{}\\{}", f.glyph(), at(x, Prec::Prefix)),
+        ExprKind::Apply(t, x) => format!("({}) {}", print_train(t), at(x, Prec::Prefix)),
+    }
+}
+
+/// Prints a train. `∘` is left-associative, so only a composition on the
+/// right of `∘` needs parentheses.
+fn print_train(t: &Train) -> String {
+    match &t.kind {
+        TrainKind::Reduce(f) => format!("{}/", f.glyph()),
+        TrainKind::Scan(f) => format!("{}\\", f.glyph()),
+        TrainKind::Shape => "⍴".to_string(),
+        TrainKind::Transpose => "⍉".to_string(),
+        TrainKind::Reshape(dims) => {
+            let d: Vec<String> = dims.iter().map(ToString::to_string).collect();
+            format!("{}⍴", d.join(" "))
+        }
+        TrainKind::Compose(f, g) => {
+            let right = if matches!(g.kind, TrainKind::Compose(..)) {
+                format!("({})", print_train(g))
+            } else {
+                print_train(g)
+            };
+            format!("{} ∘ {}", print_train(f), right)
+        }
     }
 }

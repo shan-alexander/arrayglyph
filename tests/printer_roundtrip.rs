@@ -92,6 +92,46 @@ const CORPUS: &[(&str, &str)] = &[
         "2 2⍴m +.× ⍉2 2⍴m",
         "m.reshape::<2, 2>().matmul(&m.reshape::<2, 2>().transpose())",
     ),
+    // Explicit composition: `f ∘ g` applies g, then f.
+    ("(+/ ∘ ⍉) m", "compose(Reduce(Add), Transpose).call(&m)"),
+    ("(⌈\\ ∘ ⍉) m", "compose(Scan(Max), Transpose).call(&m)"),
+    ("(⍴ ∘ ⍉) m", "compose(Shape, Transpose).call(&m)"),
+    (
+        "(⍉ ∘ 2 3⍴) ⍳6",
+        "compose(Transpose, Reshape::<2, 3>).call(&iota::<6>())",
+    ),
+    (
+        "(+/ ∘ 6⍴) m",
+        "compose(Reduce(Add), Reshape::<1, 6>).call(&m)",
+    ),
+    (
+        "(+/ ∘ ⍉ ∘ 2 3⍴) ⍳6",
+        "compose(compose(Reduce(Add), Transpose), Reshape::<2, 3>).call(&iota::<6>())",
+    ),
+    (
+        "(+/ ∘ (⍉ ∘ 2 3⍴)) ⍳6",
+        "compose(Reduce(Add), compose(Transpose, Reshape::<2, 3>)).call(&iota::<6>())",
+    ),
+    (
+        "(+/ ∘ ⍉) m + 1",
+        "compose(Reduce(Add), Transpose).call(&m).zip_with(&Array::splat(1), Add)",
+    ),
+    (
+        "(+/ ∘ ⍉) (m + 1)",
+        "compose(Reduce(Add), Transpose).call(&m.zip_with(&Array::splat(1), Add))",
+    ),
+    (
+        "2 × (-/ ∘ ⍉) m",
+        "Array::splat(2).zip_with(&compose(Reduce(Sub), Transpose).call(&m), Mul)",
+    ),
+    (
+        "(+/ ∘ ⍉) (⍉ ∘ ⍉) m",
+        "compose(Reduce(Add), Transpose).call(&compose(Transpose, Transpose).call(&m))",
+    ),
+    (
+        "+/(⍉ ∘ ⍉) m",
+        "compose(Transpose, Transpose).call(&m).reduce(Add)",
+    ),
 ];
 
 #[test]
@@ -142,6 +182,11 @@ fn non_canonical_glyph_input_is_normalised() {
         ("2 3 ⍴ ⍳ 6", "2 3⍴⍳6"),
         ("a+.×b", "a +.× b"),
         ("(⍳5) + x", "⍳5 + x"),
+        ("+/ ∘ ⍉ m", "(+/ ∘ ⍉) m"), // unparenthesised train
+        ("((+/ ∘ ⍉)) m", "(+/ ∘ ⍉) m"),
+        ("(+/ ∘ ⍉ m)", "(+/ ∘ ⍉) m"),
+        ("(+/) x", "+/x"), // a lone function needs no compose
+        ("(+/ ∘ ⍉)m", "(+/ ∘ ⍉) m"),
     ];
     for (input, canon) in cases {
         assert_eq!(Expr::parse_glyph(input).unwrap().to_glyph(), canon);
@@ -158,6 +203,13 @@ fn rust_side_accepts_macros_paths_and_parens() {
         ("x.reduce(arrayglyph::op::Min)", "⌊/x"),
         ("(a).zip_with(&(b), Add)", "a + b"),
         ("Array::vector([1, 2, 3,])", "1 2 3"),
+        (
+            "train::compose(train::Reduce(op::Add), train::Transpose).call(&m)",
+            "(+/ ∘ ⍉) m",
+        ),
+        ("compose(Reduce(Add), Transpose,).call(m)", "(+/ ∘ ⍉) m"),
+        ("Reduce(Add).call(&x)", "+/x"),
+        ("Reshape::<2, 3>.call(&x)", "2 3⍴x"),
     ];
     for (input, glyph) in cases {
         assert_eq!(rust_to_glyph(input).unwrap(), glyph, "{input}");
@@ -167,20 +219,25 @@ fn rust_side_accepts_macros_paths_and_parens() {
 #[test]
 fn glyph_errors() {
     let bad = [
-        "a * b",   // ASCII * is APL power
-        "-x",      // monadic minus unsupported
-        "+/",      // missing operand
-        "a + (b",  // unbalanced
-        "a b",     // trailing input
-        "⍳x",      // iota needs a literal
-        "⍳¯3",     // iota needs a non-negative literal
-        "⍳5 6",    // iota takes one length
-        "x⍴y",     // reshape needs a literal shape (x⍴ is not a function)
-        "2 3 4⍴x", // rank 3 not supported
-        "1.5⍴x",   // non-integer shape
-        "a +/ b",  // n-wise reduce
-        "a ∘.× b", // outer product: Phase 2
-        "a +",     // dangling operator
+        "a * b",      // ASCII * is APL power
+        "-x",         // monadic minus unsupported
+        "+/",         // missing operand
+        "a + (b",     // unbalanced
+        "a b",        // trailing input
+        "⍳x",         // iota needs a literal
+        "⍳¯3",        // iota needs a non-negative literal
+        "⍳5 6",       // iota takes one length
+        "x⍴y",        // reshape needs a literal shape (x⍴ is not a function)
+        "2 3 4⍴x",    // rank 3 not supported
+        "1.5⍴x",      // non-integer shape
+        "a +/ b",     // n-wise reduce
+        "a ∘.× b",    // outer product: Phase 2
+        "(+/ ∘) m",   // dangling compose
+        "(∘ ⍉) m",    // compose needs a left function
+        "(+/ ∘ ⍉)",   // a train must be applied
+        "(+/ ∘ x) m", // x is not a function
+        "(- ∘ ⍉) m",  // monadic minus is not a function
+        "a +",        // dangling operator
         ")",
     ];
     for g in bad {
@@ -201,6 +258,10 @@ fn rust_errors() {
         "reduce!(%, x)",
         "x.reduce(Add) y",
         "Array::splat(2i32)",
+        "compose(Reduce(Add), Transpose)",  // not applied
+        "compose(Reduce(Add), x).call(&m)", // x is not a function value
+        "compose(Reduce(Pow), Transpose).call(&m)",
+        "Transpose.apply(&m)",
     ];
     for r in bad {
         assert!(rust_to_glyph(r).is_err(), "{r:?} should be rejected");

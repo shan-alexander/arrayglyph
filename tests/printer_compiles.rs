@@ -66,4 +66,15 @@ fn desugared_output_compiles_and_evaluates() {
 
     let shp = check!("⍴m" => m.shape());
     assert_eq!(shp, (2, 2));
+
+    let colsum2 = check!("(+/ ∘ ⍉) m" => compose(Reduce(Add), Transpose).call(&m));
+    assert_eq!(colsum2, colsum);
+
+    let three = check!("(+/ ∘ ⍉ ∘ 2 3⍴) ⍳6"
+        => compose(compose(Reduce(Add), Transpose), Reshape::<2, 3>).call(&iota::<6>()));
+    assert_eq!(three.as_slice(), &[3, 5, 7]);
+
+    let shifted = check!("(⌈\\ ∘ ⍉) m + 1"
+        => compose(Scan(Max), Transpose).call(&m).zip_with(&Array::splat(1), Add));
+    assert_eq!(shifted.as_slice(), &[2, 4, 3, 5]);
 }

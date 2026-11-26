@@ -30,6 +30,9 @@
 //! * Prefix forms (`f/`, `f\`, `⍴`, `⍉`, `r c⍴`, `⍳n`) bind tighter than any
 //!   infix operator, like Rust's unary operators. So `+/a × b` is
 //!   `(+/a) × b`, and the dot product is written `+/(a × b)`.
+//! * `∘` composes functions explicitly: `(+/ ∘ ⍉) m` applies `⍉`, then `+/`,
+//!   and becomes `compose(Reduce(Add), Transpose).call(&m)`. An applied
+//!   composition binds like any other prefix form.
 //!
 //! Parentheses group. The glyph printer emits only the parentheses that this
 //! table needs. See the crate's `DESIGN.md` §6 and §7 for the full glyph
@@ -228,6 +231,54 @@ pub enum ExprKind {
     Scan(Func, Box<Expr>),
     /// `a +.× b`, which becomes `a.matmul(&b)`.
     MatMul(Box<Expr>, Box<Expr>),
+    /// `(f ∘ g) x`: applies a composed function, which becomes
+    /// `compose(F, G).call(&x)`. Only used when the function contains `∘`;
+    /// a lone function such as `(+/) x` is normalised to [`ExprKind::Reduce`].
+    Apply(Train, Box<Expr>),
+}
+
+/// A function value in a train: an operand of `∘`, plus its [`Span`].
+///
+/// ```
+/// use arrayglyph::printer::{Expr, ExprKind, TrainKind};
+/// let e = Expr::parse_glyph("(+/ ∘ ⍉) m").unwrap();
+/// let ExprKind::Apply(train, _) = &e.kind else { panic!() };
+/// assert!(matches!(train.kind, TrainKind::Compose(..)));
+/// // Like parenthesised expressions, a train's span includes its parentheses.
+/// assert_eq!(train.span.slice("(+/ ∘ ⍉) m"), "(+/ ∘ ⍉)");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Train {
+    /// What the function is.
+    pub kind: TrainKind,
+    /// Where it came from in the parsed source.
+    pub span: Span,
+}
+
+/// The function forms that can appear in a train.
+///
+/// ```
+/// use arrayglyph::printer::{Expr, ExprKind, Func, TrainKind};
+/// let e = Expr::parse_glyph("(⌈\\ ∘ 2 3⍴) v").unwrap();
+/// let ExprKind::Apply(t, _) = &e.kind else { panic!() };
+/// let TrainKind::Compose(f, g) = &t.kind else { panic!() };
+/// assert_eq!(f.kind, TrainKind::Scan(Func::Max));
+/// assert_eq!(g.kind, TrainKind::Reshape(vec![2, 3]));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TrainKind {
+    /// `f/`, which becomes `Reduce(F)`.
+    Reduce(Func),
+    /// `f\`, which becomes `Scan(F)`.
+    Scan(Func),
+    /// `⍴`, which becomes `Shape`.
+    Shape,
+    /// `⍉`, which becomes `Transpose`.
+    Transpose,
+    /// `r c⍴` or `n⍴`, which becomes `Reshape::<r, c>`.
+    Reshape(Vec<usize>),
+    /// `f ∘ g` (apply `g`, then `f`), which becomes `compose(f, g)`.
+    Compose(Box<Train>, Box<Train>),
 }
 
 impl Expr {
@@ -480,6 +531,28 @@ mod span_tests {
         let src = "+/\n";
         let err = Expr::parse_glyph(src).unwrap_err();
         assert!(err.span.is_empty());
+        assert_eq!((err.span.start.line, err.span.start.col), (2, 1));
+    }
+
+    #[test]
+    fn train_spans_on_multibyte_multiline_input() {
+        let src = "(⌈\\ ∘\n ⍉) m";
+        let e = Expr::parse_glyph(src).unwrap();
+        assert_eq!(e.span.slice(src), src);
+        let ExprKind::Apply(t, x) = &e.kind else {
+            panic!("expected a train application")
+        };
+        assert_eq!(t.span.slice(src), "(⌈\\ ∘\n ⍉)");
+        let TrainKind::Compose(f, g) = &t.kind else {
+            panic!("expected compose")
+        };
+        assert_eq!(f.span.slice(src), "⌈\\");
+        assert_eq!((lc(f.span.start), lc(f.span.end)), ((1, 2), (1, 4)));
+        assert_eq!(g.span.slice(src), "⍉");
+        assert_eq!((lc(g.span.start), lc(g.span.end)), ((2, 2), (2, 3)));
+        assert_eq!((lc(x.span.start), lc(x.span.end)), ((2, 5), (2, 6)));
+
+        let err = Expr::parse_glyph("(+/ ∘\n) m").unwrap_err();
         assert_eq!((err.span.start.line, err.span.start.col), (2, 1));
     }
 

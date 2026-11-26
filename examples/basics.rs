@@ -25,6 +25,10 @@ fn main() {
     let mmt = m.matmul(&m.transpose());
     println!("\nm +.× ⍉m where m←2 3⍴⍳6:\n{mmt}\n");
 
+    // Explicit composition: (+/ ∘ ⍉) applies ⍉ first, then +/.
+    let col_sums = compose(Reduce(Add), Transpose);
+    println!("(+/ ∘ ⍉) m:\n{}\n", col_sums.call(&m));
+
     // The pretty-printer, both directions.
     for glyph in [
         "+/(a × b)",
@@ -33,6 +37,7 @@ fn main() {
         "2 3⍴⍳6",
         "+/x - y",
         "a +.× ⍉b",
+        "(+/ ∘ ⍉) m",
     ] {
         let rust = glyph_to_rust(glyph).expect("valid glyph");
         let back = rust_to_glyph(&rust).expect("canonical rust");

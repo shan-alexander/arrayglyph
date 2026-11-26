@@ -68,7 +68,8 @@ and this design doesn't pretend otherwise:
 
 * **We borrow APL's vocabulary, not its grammar.** Glyph text evaluates **left
   to right with Rust-style precedence** (§7.1), so a Rust reader's instincts
-  about `2 × 3 + 4` are right.
+  about `2 × 3 + 4` are right. Composition, which APL gets implicitly from
+  right-to-left scope, is an explicit, visible operator (`∘`, §7.2).
 
 * The **canonical, compiled form is verbose Rust**. Glyphs never hide a borrow,
   an allocation, or a trait bound. The verbose form shows all of them.
@@ -160,6 +161,8 @@ Operators and other functions:
 | `r c⍴x` / `n⍴x` | reshape | `x.reshape::<r, c>()` / `x.reshape::<1, n>()` |
 | `⍉x` | transpose | `x.transpose()` |
 | `a +.× b` | inner (matrix) product | `a.matmul(&b)` |
+| `(f ∘ g) x` | compose, apply | `compose(F, G).call(&x)` (see §7.2) |
+| `f/`, `f\`, `⍉`, `⍴`, `r c⍴` (as `∘` operands) | function values | `Reduce(F)`, `Scan(F)`, `Transpose`, `Shape`, `Reshape::<r, c>` |
 | `¯3` | negative literal | `-3` |
 
 ## 7. Evaluation order, reduce and scan
@@ -177,7 +180,7 @@ left-to-right with no precedence (Nial-style, `2 × 3 + 4` = 20) or
 | Sum | `a + b`, `a - b` | left | `+ -` |
 | Product | `a × b`, `a ÷ b`, `a +.× b` | left | `* /` (and Python's `@` for matmul) |
 | MaxMin | `a ⌈ b`, `a ⌊ b` | left | method call `a.max(b)` |
-| Prefix | `f/x`, `f\x`, `⍴x`, `⍉x`, `r c⍴x`, `⍳n` | nests rightward | unary operators / calls |
+| Prefix | `f/x`, `f\x`, `⍴x`, `⍉x`, `r c⍴x`, `⍳n`, `(f ∘ g) x` | nests rightward | unary operators / calls |
 | Atom | `x`, `3`, `1 2 3`, `( … )` | — | — |
 
 Worked examples:
@@ -207,7 +210,7 @@ is coherent for these glyphs: `× ÷` and `+ -` map one-to-one onto Rust's
   is the least settled choice (see §10).
 * **`+.×` sits at the `×` level**, like Python's `@` (and like matrix
   product in mathematical notation).
-* **Prefix forms (`f/`, `⍴`, `⍉`, reshape) bind tightest**, like
+* **Prefix forms (`f/`, `⍴`, `⍉`, reshape, applied trains) bind tightest**, like
   Rust's unary operators and function calls. So `+/a × b` is `(+/a) × b`. A
   reduction over an expression needs parentheses: `+/(a × b)`. Stacked
   prefixes still nest naturally: `+/⍉m` is `+/(⍉m)`, just as `-!x` in Rust
@@ -223,7 +226,41 @@ is coherent for these glyphs: `× ÷` and `+ -` map one-to-one onto Rust's
 * APL users must unlearn right-to-left. `+/a × b` is no longer a dot product.
   This is the deliberate cost of the decision.
 
-### 7.2 Reduce and scan
+### 7.2 Explicit composition (`∘`) and trains
+
+**Decision (S, 2026-11-25):** composition is an explicit, visible operator.
+Under right-to-left evaluation, `+/⍉m` *is* a composition. Under
+left-to-right, composing is spelled out:
+
+* **Meaning.** `f ∘ g` applies `g` first, then `f`. This is mathematical
+  composition, `(f ∘ g)(x) = f(g(x))`, as in APL's `∘` and Haskell's `.`.
+  `(+/ ∘ ⍉) m` has the same value as `+/⍉m`. The difference is that `+/ ∘ ⍉`
+  is a value you can name and reuse.
+* **Operands** are function forms: `f/`, `f\`, `⍉`, `⍴`, `r c⍴`, a
+  parenthesised train, or another composition. `∘` is left-associative:
+  `f ∘ g ∘ h` is `(f ∘ g) ∘ h`. Composition is associative, so the
+  grouping never changes the value. The printer keeps explicit right-nested
+  grouping, `f ∘ (g ∘ h)`, so round trips are exact.
+* **Application.** `(f ∘ g) x` binds like any prefix form. Parentheses around
+  the train are canonical, because they make the function boundary visible.
+  `+/ ∘ ⍉ m` (no parentheses) is accepted and normalised. A lone function in
+  parentheses, `(+/) x`, normalises to `+/x`. A train that is never applied is
+  an error.
+* **Rust desugaring** uses the `arrayglyph::train` module. It contains
+  function values `Reduce(F)`, `Scan(F)`, `Transpose`, `Shape`, and
+  `Reshape::<r, c>`, the helper `compose(f, g)`, and the trait `Monadic`, whose
+  `.call` accepts `&Array` or `Array`. So `(+/ ∘ ⍉) m` becomes
+  `compose(Reduce(Add), Transpose).call(&m)`. Shapes are still checked at
+  compile time through the composition.
+* **ASCII spelling.** In Rust, the spelling *is* `compose(f, g)`. There is no
+  `compose!` macro, because a function call is already as short and more
+  explicit. Closures were rejected because Rust can't infer a closure's
+  argument type from a later `.call(&m)`, so every closure would need a full
+  `Array<T, R, C>` annotation.
+* **Not in this pass:** forks/atops (`(+/ ÷ ≢)`), dyadic trains, and outer
+  product `∘.f`. Glyph `∘.` is rejected with an explicit "Phase 2" error.
+
+### 7.3 Reduce and scan
 
 * **Axis.** Phase 1 always reduces/scans along the **last axis**. An `R × C`
   array reduces to `R × 1`. To reduce columns, `⍉` first:
@@ -277,7 +314,8 @@ implemented as iterator folds. Phase 1 has no `proc-macro` crate.
   desugarer emits (method chains `.zip_with(&_, Op)`, `.reduce(Op)`, `.scan(Op)`,
   `.matmul(&_)`, `.reshape::<r, c>()`, `.transpose()`, `.shape()`, plus
   `Array::vector([..])`, `Array::splat(n)`, `iota::<n>()`, identifiers,
-  parentheses, and `reduce!(op, x)` / `scan!(op, x)` macro calls). It is
+  parentheses, `reduce!(op, x)` / `scan!(op, x)` macro calls, and
+  `compose(…).call(&x)` over `train` function values). It is
   **not** a general Rust parser. Arbitrary Rust, including operator forms like
   `&a + &b`, is rejected with an error, not guessed at.
 * **Round trip.** `rust_to_glyph(glyph_to_rust(g)) == g` for every canonical
@@ -336,14 +374,14 @@ pub struct ParseError { pub message: String, pub span: Span }
 
 1. ~~Axis specification.~~ **Decided (S, 2026-11-25), not yet implemented:**
    `reduce!(+, m, axis = N)`, default axis 0 (columns), no separate row/col
-   macros, and no all-axes reduction in one call (§7.2). The glyph spelling
+   macros, and no all-axes reduction in one call (§7.3). The glyph spelling
    (`+/[0] m` vs `+⌿ m`) is still open.
 2. **Rank polymorphism.** APL functions work at any rank. Should we go through
    shape types (`Array<T, S: Shape>`, fully static but complex type signatures),
    dynamic rank (`ArrayD`, simple but runtime shape errors), or both, with
    conversions? This also decides whether reductions can drop a dimension.
 3. ~~Right-to-left vs Rust precedence.~~ **Resolved (S, 2026-11-25):** left
-   to right with Rust-style precedence and left folds (§7).
+   to right with Rust-style precedence, left folds, and explicit `∘` (§7).
    Still open within it: should `⌈ ⌊` bind tighter than `×` (the current
    method-call analogy) or looser than `+ -` (so that `0 ⌈ x - 1` clamps
    without parentheses)?
@@ -364,8 +402,8 @@ transpose, reshape, `reduce!`/`scan!`, the bidirectional printer, and the
 * **Outer and inner product macros.** `outer!(*, a, b)` (`a ∘.× b`) and a
   general `inner!(+, *, a, b)` (`a +.× b` with any pair of functions; today
   only `+.×` / `matmul` exists).
-* **Operator trains / forks.** An explicit compose operator, then forks such
-  as `(+/ ÷ ≢)` (mean) and dyadic trains.
+* **Operator trains / forks.** Beyond `∘` (done, §7.2): forks such as
+  `(+/ ÷ ≢)` (mean), atops, and dyadic trains.
 * **Opt-in Rayon parallel variants** behind a `rayon` cargo feature:
   `par_reduce`, `par_zip_with`, and `par_matmul`. Parallel reduce is only
   offered for `ASSOCIATIVE` ops, which the type system already tracks.
