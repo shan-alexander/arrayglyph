@@ -479,81 +479,271 @@ impl<T, const ROWS: usize, const COLS: usize> Array<T, ROWS, COLS> {
         })
     }
 
-    /// `f/ x`: reduces each row (the **last axis**) with `f` as a **left
-    /// fold**: `f/ a b c = (a f b) f c`. This matches Rust's left-to-right
-    /// convention and [`Iterator::reduce`], which implements it.
+    /// `f⌿ x`: reduces along **axis 0**, down each column, as a **left
+    /// fold**: `f⌿` over rows `a b c` is `(a f b) f c`, element by element.
+    /// An `R × C` array becomes `1 × C`. This is the default axis, so
+    /// `reduce!(+, m)` gives column totals.
     ///
-    /// For associative ops (`+ × ⌈ ⌊`) this is the familiar result. For
-    /// `-` and `÷` it differs from APL, which uses a right fold.
+    /// For associative ops (`+ × ⌈ ⌊`) the fold direction doesn't matter.
+    /// For `-` and `÷` it does, and arrayglyph folds left (like
+    /// [`Iterator::reduce`]) where APL folds right.
     ///
-    /// The reduced axis is kept with length 1 (`R × C → R × 1`). For a
-    /// vector, call [`item`](Array::item) on the `1 × 1` result. `COLS` must
-    /// be greater than 0, and that is checked at compile time.
+    /// For the other axis use [`reduce_axis`](Array::reduce_axis)`::<1>`.
+    ///
+    /// ```
+    /// use arrayglyph::{op::{Add, Max}, Array};
+    /// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    /// assert_eq!(m.reduce(Add).as_slice(), &[5, 7, 9]); // 1×3
+    /// assert_eq!(m.reduce(Max).shape(), (1, 3));
+    /// ```
+    ///
+    /// Axis 0 must have at least two rows. Reducing a 1-row array (such as a
+    /// [`Vector`](crate::Vector)) down its columns would return it unchanged,
+    /// which is almost always a mistake, so it is a compile error. Reduce a
+    /// vector with `reduce_axis::<1>`:
+    ///
+    /// ```compile_fail,E0080
+    /// use arrayglyph::{op::Add, Array};
+    /// let v = Array::vector([1, 2, 3]);
+    /// let _ = v.reduce(Add); // ERROR: axis 0 of a 1-row array; use axis 1
+    /// ```
+    pub fn reduce<O: Dyadic<T>>(&self, op: O) -> Array<T, 1, COLS>
+    where
+        T: Clone,
+    {
+        <Axis<0> as AlongAxis<T, ROWS, COLS>>::reduce(self, op)
+    }
+
+    /// `f/ x` (axis 1) or `f⌿ x` (axis 0): reduces along `AXIS` as a left
+    /// fold. `AXIS = 0` goes down each column (`R × C → 1 × C`, the same as
+    /// [`reduce`](Array::reduce)); `AXIS = 1` goes along each row
+    /// (`R × C → R × 1`). The reduced axis is kept with length 1, so
+    /// reducing both axes is two calls, and a vector's total is
+    /// `.reduce_axis::<1>(op).item()`.
     ///
     /// ```
     /// use arrayglyph::{op::{Add, Sub}, Array};
     /// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
-    /// assert_eq!(m.reduce(Add).as_slice(), &[6, 15]);
+    /// assert_eq!(m.reduce_axis::<0>(Add).as_slice(), &[5, 7, 9]);
+    /// assert_eq!(m.reduce_axis::<1>(Add).as_slice(), &[6, 15]);
+    /// // Grand total: one axis, then the other.
+    /// assert_eq!(m.reduce(Add).reduce_axis::<1>(Add).item(), 21);
     /// // Left fold: -/ 1 2 3  =  (1 - 2) - 3  =  -4
-    /// assert_eq!(Array::vector([1, 2, 3]).reduce(Sub).item(), -4);
+    /// assert_eq!(Array::vector([1, 2, 3]).reduce_axis::<1>(Sub).item(), -4);
     /// ```
+    ///
+    /// Arrays have two axes, so any other `AXIS` is a compile error:
+    ///
+    /// ```compile_fail,E0277
+    /// use arrayglyph::{op::Add, Array};
+    /// let m = Array::from_rows([[1, 2], [3, 4]]);
+    /// let _ = m.reduce_axis::<2>(Add); // ERROR: no axis 2
+    /// ```
+    ///
+    /// Reducing a length-1 axis is a no-op, and therefore a compile error:
     ///
     /// ```compile_fail,E0080
     /// use arrayglyph::{op::Add, Array};
-    /// let empty: Array<i32, 2, 0> = Array::splat(0);
-    /// let _ = empty.reduce(Add); // ERROR: cannot reduce a zero-length axis
+    /// let col: Array<i32, 3, 1> = Array::splat(1);
+    /// let _ = col.reduce_axis::<1>(Add); // ERROR: axis 1 has length 1
     /// ```
-    pub fn reduce<O: Dyadic<T>>(&self, _op: O) -> Array<T, ROWS, 1>
+    pub fn reduce_axis<const AXIS: usize>(
+        &self,
+        op: impl Dyadic<T>,
+    ) -> <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::Reduced
+    where
+        T: Clone,
+        Axis<AXIS>: AlongAxis<T, ROWS, COLS>,
+    {
+        <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::reduce(self, op)
+    }
+
+    /// `f⍀ x`: scans along **axis 0**, down each column (the default axis).
+    /// Row `i` of the result is `f⌿` of rows `0..=i`: running totals per
+    /// column. The shape doesn't change. Computed in O(n) for every op.
+    ///
+    /// ```
+    /// use arrayglyph::{op::Add, Array};
+    /// let m = Array::from_rows([[1, 2], [3, 4], [5, 6]]);
+    /// assert_eq!(m.scan(Add).as_slice(), &[1, 2, 4, 6, 9, 12]);
+    /// ```
+    ///
+    /// Like [`reduce`](Array::reduce), axis 0 needs at least two rows; scan
+    /// a vector with `scan_axis::<1>`:
+    ///
+    /// ```compile_fail,E0080
+    /// use arrayglyph::{op::Add, Array};
+    /// let _ = Array::vector([1, 2, 3]).scan(Add); // ERROR: use axis 1
+    /// ```
+    pub fn scan<O: Dyadic<T>>(&self, op: O) -> Self
+    where
+        T: Clone,
+    {
+        <Axis<0> as AlongAxis<T, ROWS, COLS>>::scan(self, op)
+    }
+
+    /// `f\ x` (axis 1) or `f⍀ x` (axis 0): scans along `AXIS`. Element `i`
+    /// along the axis is the left fold of elements `0..=i`.
+    ///
+    /// ```
+    /// use arrayglyph::{op::{Add, Sub}, Array};
+    /// assert_eq!(Array::vector([1, 2, 3, 4]).scan_axis::<1>(Add).as_slice(), &[1, 3, 6, 10]);
+    /// // -\ 1 2 3  is  1, 1-2, (1-2)-3  =  1 ¯1 ¯4
+    /// assert_eq!(Array::vector([1, 2, 3]).scan_axis::<1>(Sub).as_slice(), &[1, -1, -4]);
+    /// ```
+    ///
+    /// ```compile_fail,E0277
+    /// use arrayglyph::{op::Add, Array};
+    /// let _ = Array::from_rows([[1, 2], [3, 4]]).scan_axis::<7>(Add); // ERROR
+    /// ```
+    pub fn scan_axis<const AXIS: usize>(&self, op: impl Dyadic<T>) -> Self
+    where
+        T: Clone,
+        Axis<AXIS>: AlongAxis<T, ROWS, COLS>,
+    {
+        <Axis<AXIS> as AlongAxis<T, ROWS, COLS>>::scan(self, op)
+    }
+}
+
+/// A type-level axis number, used by [`Array::reduce_axis`] and
+/// [`Array::scan_axis`] (and by `axis = N` in [`reduce!`](crate::reduce) and
+/// [`scan!`](crate::scan)). `Axis<0>` runs down the columns (the rows axis,
+/// like APL's first axis `⌿`) and `Axis<1>` runs along each row (APL's last
+/// axis `/`). Only those two implement [`AlongAxis`].
+///
+/// ```
+/// use arrayglyph::{Array, Axis, AlongAxis, op::Add};
+/// let m = Array::from_rows([[1, 2], [3, 4]]);
+/// assert_eq!(<Axis<1> as AlongAxis<_, 2, 2>>::reduce(&m, Add).as_slice(), &[3, 7]);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Axis<const N: usize>;
+
+/// Reduction and scan along one axis of an `R × C` array. Implemented only
+/// for [`Axis<0>`] and [`Axis<1>`]; the reduced shape is the associated
+/// type, so the result shape is known at compile time.
+///
+/// Both impls require the axis to have length at least 2 (checked at compile
+/// time): reducing or scanning a length-1 axis returns the input unchanged,
+/// which in practice means the wrong axis was picked.
+///
+/// ```
+/// use arrayglyph::{Array, Axis, AlongAxis, op::Add};
+/// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+/// let cols: Array<i32, 1, 3> = <Axis<0> as AlongAxis<_, 2, 3>>::reduce(&m, Add);
+/// assert_eq!(cols.as_slice(), &[5, 7, 9]);
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an axis of a 2-D array",
+    label = "use axis 0 (down columns) or axis 1 (along rows)",
+    note = "arrayglyph arrays have exactly two axes: 0 (rows axis, `⌿`) and 1 (columns axis, `/`)"
+)]
+pub trait AlongAxis<T, const ROWS: usize, const COLS: usize> {
+    /// The shape after reducing this axis to length 1.
+    type Reduced;
+    /// Left-fold reduction along this axis.
+    fn reduce<O: Dyadic<T>>(a: &Array<T, ROWS, COLS>, op: O) -> Self::Reduced
+    where
+        T: Clone;
+    /// Running left fold along this axis.
+    fn scan<O: Dyadic<T>>(a: &Array<T, ROWS, COLS>, op: O) -> Array<T, ROWS, COLS>
+    where
+        T: Clone;
+}
+
+impl<T, const ROWS: usize, const COLS: usize> AlongAxis<T, ROWS, COLS> for Axis<0> {
+    type Reduced = Array<T, 1, COLS>;
+
+    fn reduce<O: Dyadic<T>>(a: &Array<T, ROWS, COLS>, _op: O) -> Self::Reduced
     where
         T: Clone,
     {
         const {
             assert!(
-                COLS > 0,
-                "reduce: cannot reduce a zero-length axis (COLS == 0)"
+                ROWS >= 2,
+                "reduce along axis 0 needs at least 2 rows: a 1-row array (such as a \
+                 vector) is unchanged by it; use axis = 1"
+            )
+        };
+        let mut rows = a.rows();
+        let mut acc: Vec<T> = rows.next().expect("ROWS >= 2").to_vec();
+        for row in rows {
+            acc = acc
+                .into_iter()
+                .zip(row.iter().cloned())
+                .map(|(x, y)| O::apply(x, y))
+                .collect();
+        }
+        Array { data: acc }
+    }
+
+    fn scan<O: Dyadic<T>>(a: &Array<T, ROWS, COLS>, _op: O) -> Array<T, ROWS, COLS>
+    where
+        T: Clone,
+    {
+        const {
+            assert!(
+                ROWS >= 2,
+                "scan along axis 0 needs at least 2 rows: a 1-row array (such as a \
+                 vector) is unchanged by it; use axis = 1"
+            )
+        };
+        let mut data: Vec<T> = Vec::with_capacity(ROWS * COLS);
+        data.extend_from_slice(a.row(0));
+        for i in 1..ROWS {
+            for (j, x) in a.row(i).iter().enumerate() {
+                let next = O::apply(data[(i - 1) * COLS + j].clone(), x.clone());
+                data.push(next);
+            }
+        }
+        Array { data }
+    }
+}
+
+impl<T, const ROWS: usize, const COLS: usize> AlongAxis<T, ROWS, COLS> for Axis<1> {
+    type Reduced = Array<T, ROWS, 1>;
+
+    fn reduce<O: Dyadic<T>>(a: &Array<T, ROWS, COLS>, _op: O) -> Self::Reduced
+    where
+        T: Clone,
+    {
+        const {
+            assert!(
+                COLS >= 2,
+                "reduce along axis 1 needs at least 2 columns: a 1-column array is \
+                 unchanged by it; use axis = 0"
             )
         };
         Array {
-            data: self
+            data: a
                 .rows()
-                .map(|row| row.iter().cloned().reduce(O::apply).expect("COLS > 0"))
+                .map(|row| row.iter().cloned().reduce(O::apply).expect("COLS >= 2"))
                 .collect(),
         }
     }
 
-    /// `f\ x`: scans each row (the **last axis**). Element `i` equals `f/` of
-    /// the first `i + 1` elements. Because `f/` is a left fold, that is the
-    /// running left fold, computed in O(n) with [`Iterator::scan`] for every
-    /// op. `COLS` must be greater than 0, and that is checked at compile time.
-    ///
-    /// ```
-    /// use arrayglyph::{op::{Add, Sub}, Array};
-    /// assert_eq!(Array::vector([1, 2, 3, 4]).scan(Add).as_slice(), &[1, 3, 6, 10]);
-    /// // -\ 1 2 3  is  1, 1-2, (1-2)-3  =  1 ¯1 ¯4
-    /// assert_eq!(Array::vector([1, 2, 3]).scan(Sub).as_slice(), &[1, -1, -4]);
-    /// ```
-    ///
-    /// ```compile_fail,E0080
-    /// use arrayglyph::{op::Add, Array};
-    /// let empty: Array<i32, 3, 0> = Array::splat(0);
-    /// let _ = empty.scan(Add); // ERROR: cannot scan a zero-length axis
-    /// ```
-    pub fn scan<O: Dyadic<T>>(&self, _op: O) -> Self
+    fn scan<O: Dyadic<T>>(a: &Array<T, ROWS, COLS>, _op: O) -> Array<T, ROWS, COLS>
     where
         T: Clone,
     {
-        const { assert!(COLS > 0, "scan: cannot scan a zero-length axis (COLS == 0)") };
+        const {
+            assert!(
+                COLS >= 2,
+                "scan along axis 1 needs at least 2 columns: a 1-column array is \
+                 unchanged by it; use axis = 0"
+            )
+        };
         let mut data = Vec::with_capacity(ROWS * COLS);
-        for row in self.rows() {
+        for row in a.rows() {
             let mut it = row.iter().cloned();
-            let first = it.next().expect("COLS > 0");
+            let first = it.next().expect("COLS >= 2");
             data.push(first.clone());
             data.extend(it.scan(first, |acc, x| {
                 *acc = O::apply(acc.clone(), x);
                 Some(acc.clone())
             }));
         }
-        Self { data }
+        Array { data }
     }
 }
 
@@ -607,7 +797,7 @@ impl<T> Array<T, 1, 1> {
     ///
     /// ```
     /// use arrayglyph::{op::Add, Array};
-    /// let total: i32 = Array::vector([1, 2, 3]).reduce(Add).item();
+    /// let total: i32 = Array::vector([1, 2, 3]).reduce_axis::<1>(Add).item();
     /// assert_eq!(total, 6);
     /// ```
     pub fn item(self) -> T {

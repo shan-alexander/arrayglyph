@@ -1,7 +1,7 @@
 //! Dyadic scalar functions: the `f` in `a f b`, `f/ x`, and `f\ x`.
 //!
 //! Each function is a zero-sized marker type that implements [`Dyadic`].
-//! Markers are passed by value, for example `v.reduce(Add)`.
+//! Markers are passed by value, for example `m.reduce(Add)`.
 //!
 //! | glyph | marker | associative |
 //! |---|---|---|
@@ -60,7 +60,7 @@ arith_op!(
     ///
     /// ```
     /// use arrayglyph::{op::Add, Array};
-    /// assert_eq!(Array::vector([1, 2, 3]).reduce(Add).item(), 6);
+    /// assert_eq!(Array::vector([1, 2, 3]).reduce_axis::<1>(Add).item(), 6);
     /// ```
     Add,
     Add,
@@ -74,7 +74,7 @@ arith_op!(
     ///
     /// ```
     /// use arrayglyph::{op::Sub, Array};
-    /// assert_eq!(Array::vector([1, 2, 3]).reduce(Sub).item(), -4);
+    /// assert_eq!(Array::vector([1, 2, 3]).reduce_axis::<1>(Sub).item(), -4);
     /// ```
     Sub,
     Sub,
@@ -87,7 +87,7 @@ arith_op!(
     ///
     /// ```
     /// use arrayglyph::{op::Mul, Array};
-    /// assert_eq!(Array::vector([2, 3, 4]).reduce(Mul).item(), 24);
+    /// assert_eq!(Array::vector([2, 3, 4]).reduce_axis::<1>(Mul).item(), 24);
     /// ```
     Mul,
     Mul,
@@ -102,7 +102,7 @@ arith_op!(
     ///
     /// ```
     /// use arrayglyph::{op::Div, Array};
-    /// assert_eq!(Array::vector([8, 4, 2]).reduce(Div).item(), 1);
+    /// assert_eq!(Array::vector([8, 4, 2]).reduce_axis::<1>(Div).item(), 1);
     /// ```
     Div,
     Div,
@@ -116,7 +116,7 @@ arith_op!(
 ///
 /// ```
 /// use arrayglyph::{op::Max, Array};
-/// assert_eq!(Array::vector([3, 9, 2]).reduce(Max).item(), 9);
+/// assert_eq!(Array::vector([3, 9, 2]).reduce_axis::<1>(Max).item(), 9);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Max;
@@ -136,7 +136,7 @@ impl<T: PartialOrd> Dyadic<T> for Max {
 ///
 /// ```
 /// use arrayglyph::{op::Min, Array};
-/// assert_eq!(Array::vector([3, 9, 2]).reduce(Min).item(), 2);
+/// assert_eq!(Array::vector([3, 9, 2]).reduce_axis::<1>(Min).item(), 2);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Min;

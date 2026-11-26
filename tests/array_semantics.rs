@@ -15,67 +15,108 @@ fn ref_lfold(xs: &[i64], f: impl Fn(i64, i64) -> i64) -> i64 {
 fn reduce_is_left_to_right_for_all_ops() {
     let data = [7i64, 3, 9, 2, 5];
     let v = Array::vector(data);
-    assert_eq!(reduce!(+, v).item(), ref_lfold(&data, |a, b| a + b));
-    assert_eq!(reduce!(-, v).item(), ref_lfold(&data, |a, b| a - b));
-    assert_eq!(reduce!(*, v).item(), ref_lfold(&data, |a, b| a * b));
+    assert_eq!(
+        reduce!(+, v, axis = 1).item(),
+        ref_lfold(&data, |a, b| a + b)
+    );
+    assert_eq!(
+        reduce!(-, v, axis = 1).item(),
+        ref_lfold(&data, |a, b| a - b)
+    );
+    assert_eq!(
+        reduce!(*, v, axis = 1).item(),
+        ref_lfold(&data, |a, b| a * b)
+    );
     let pow2 = [64i64, 8, 4, 2]; // no zero divisors left-to-right
     assert_eq!(
-        reduce!(/, Array::vector(pow2)).item(),
+        reduce!(/, Array::vector(pow2), axis = 1).item(),
         ref_lfold(&pow2, |a, b| a / b)
     );
-    assert_eq!(reduce!(max, v).item(), 9);
-    assert_eq!(reduce!(min, v).item(), 2);
+    assert_eq!(reduce!(max, v, axis = 1).item(), 9);
+    assert_eq!(reduce!(min, v, axis = 1).item(), 2);
     // Left-fold reference values (APL's right fold would give 2, 4 and -2).
-    assert_eq!(reduce!(-, Array::vector([1, 2, 3])).item(), -4); // (1-2)-3
-    assert_eq!(reduce!(/, Array::vector([8, 4, 2])).item(), 1); // (8/4)/2
-    assert_eq!(reduce!(-, Array::vector([1, 2, 3, 4])).item(), -8); // ((1-2)-3)-4
+    assert_eq!(reduce!(-, Array::vector([1, 2, 3]), axis = 1).item(), -4); // (1-2)-3
+    assert_eq!(reduce!(/, Array::vector([8, 4, 2]), axis = 1).item(), 1); // (8/4)/2
+    assert_eq!(reduce!(-, Array::vector([1, 2, 3, 4]), axis = 1).item(), -8); // ((1-2)-3)-4
 }
 
 #[test]
 fn scan_prefixes_match_reduce() {
     let data = [7i64, 3, 9, 2, 5];
     let v = Array::vector(data);
-    let sub = scan!(-, v);
-    let add = scan!(+, v);
+    let sub = scan!(-, v, axis = 1);
+    let add = scan!(+, v, axis = 1);
     for k in 1..=data.len() {
         assert_eq!(sub[k - 1], ref_lfold(&data[..k], |a, b| a - b));
         assert_eq!(add[k - 1], ref_lfold(&data[..k], |a, b| a + b));
     }
     let pow2 = [64i64, 8, 4, 2];
-    let div = scan!(/, Array::vector(pow2));
+    let div = scan!(/, Array::vector(pow2), axis = 1);
     assert_eq!(div.as_slice(), &[64, 8, 2, 1]);
     for k in 1..=pow2.len() {
         assert_eq!(div[k - 1], ref_lfold(&pow2[..k], |a, b| a / b));
     }
-    assert_eq!(scan!(-, Array::vector([1, 2, 3])).as_slice(), &[1, -1, -4]);
-    assert_eq!(scan!(min, v).as_slice(), &[7, 3, 3, 2, 2]);
+    assert_eq!(
+        scan!(-, Array::vector([1, 2, 3]), axis = 1).as_slice(),
+        &[1, -1, -4]
+    );
+    assert_eq!(scan!(min, v, axis = 1).as_slice(), &[7, 3, 3, 2, 2]);
 }
 
 #[test]
-fn rank2_reduce_and_scan_along_last_axis() {
+fn rank2_reduce_and_scan_along_each_axis() {
     let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
-    let r: Array<i32, 2, 1> = reduce!(+, m);
+    // axis 0 (the default): down each column, 2×3 -> 1×3.
+    let c: Array<i32, 1, 3> = reduce!(+, m);
+    assert_eq!(c.as_slice(), &[5, 7, 9]);
+    assert_eq!(reduce!(+, m, axis = 0), c);
+    assert_eq!(m.reduce_axis::<0>(Add), c);
+    assert_eq!(scan!(+, m).as_slice(), &[1, 2, 3, 5, 7, 9]);
+    assert_eq!(scan!(+, m, axis = 0), scan!(+, m));
+    // axis 1: along each row, 2×3 -> 2×1.
+    let r: Array<i32, 2, 1> = reduce!(+, m, axis = 1);
     assert_eq!(r.as_slice(), &[6, 15]);
-    assert_eq!(scan!(+, m).as_slice(), &[1, 3, 6, 4, 9, 15]);
-    // First axis via transpose.
-    assert_eq!(reduce!(+, m.transpose()).as_slice(), &[5, 7, 9]);
-    // Single-column reduce is the identity.
-    assert_eq!(reduce!(-, r).as_slice(), &[6, 15]);
+    assert_eq!(scan!(+, m, axis = 1).as_slice(), &[1, 3, 6, 4, 9, 15]);
+    // Transposing swaps the axes.
+    assert_eq!(
+        reduce!(+, m.transpose(), axis = 1).into_vec(),
+        c.clone().into_vec()
+    );
+    assert_eq!(reduce!(+, m.transpose()).into_vec(), r.clone().into_vec());
+    // Both axes is two calls, in either order.
+    assert_eq!(reduce!(+, c, axis = 1).item(), 21);
+    assert_eq!(reduce!(+, r).item(), 21);
+}
+
+#[test]
+fn axis0_folds_left_down_columns() {
+    let m = Array::from_rows([[10_i64, 1], [3, 2], [4, 8]]);
+    // (10 - 3) - 4 = 3 and (1 - 2) - 8 = -9
+    assert_eq!(reduce!(-, m).as_slice(), &[3, -9]);
+    assert_eq!(scan!(-, m).as_slice(), &[10, 1, 7, -1, 3, -9]);
+    assert_eq!(reduce!(max, m).as_slice(), &[10, 8]);
+    assert_eq!(scan!(min, m).as_slice(), &[10, 1, 3, 1, 3, 1]);
+    // Every op agrees with a reference left fold over each column.
+    let cols: Vec<Vec<i64>> = (0..2).map(|j| m.col(j).iter().copied().collect()).collect();
+    let mul = reduce!(*, m);
+    for (j, col) in cols.iter().enumerate() {
+        assert_eq!(mul[(0, j)], ref_lfold(col, |a, b| a * b));
+    }
 }
 
 #[test]
 fn macros_accept_references_and_expressions() {
     let m = Array::from_rows([[1, 2], [3, 4]]);
     let rm = &m;
-    assert_eq!(reduce!(max, rm).as_slice(), &[2, 4]);
-    assert_eq!(reduce!(+, &m + &m).as_slice(), &[6, 14]);
+    assert_eq!(reduce!(max, rm, axis = 1).as_slice(), &[2, 4]);
+    assert_eq!(reduce!(+, &m + &m, axis = 1).as_slice(), &[6, 14]);
 }
 
 #[test]
 fn floats_work() {
     let v = Array::vector([1.0, 2.0, 4.0]);
-    assert_eq!(reduce!(/, v).item(), (1.0 / 2.0) / 4.0);
-    assert_eq!(reduce!(max, v).item(), 4.0);
+    assert_eq!(reduce!(/, v, axis = 1).item(), (1.0 / 2.0) / 4.0);
+    assert_eq!(reduce!(max, v, axis = 1).item(), 4.0);
 }
 
 #[test]

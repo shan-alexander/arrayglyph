@@ -11,7 +11,7 @@ three layers:
    a compact spelling and lowers to ordinary iterator folds.
 3. **A pretty-printer** (`arrayglyph::printer` + the `arrayglyph-fmt` binary)
    that turns dense glyph notation (`+/(a × b)`) into the verbose Rust it stands
-   for (`a.zip_with(&b, Mul).reduce(Add)`), and back again.
+   for (`a.zip_with(&b, Mul).reduce_axis::<1>(Add)`), and back again.
 
 ---
 
@@ -41,9 +41,10 @@ APL-style notation is very dense:
 
 | intent | glyph form | verbose Rust (what it means) |
 |---|---|---|
-| dot product | `+/(a × b)` | `a.zip_with(&b, Mul).reduce(Add)` |
-| running max | `⌈\v` | `v.scan(Max)` |
-| row sums of a matrix product | `+/(a +.× b)` | `a.matmul(&b).reduce(Add)` |
+| dot product | `+/(a × b)` | `a.zip_with(&b, Mul).reduce_axis::<1>(Add)` |
+| running max | `⌈\v` | `v.scan_axis::<1>(Max)` |
+| row sums of a matrix product | `+/(a +.× b)` | `a.matmul(&b).reduce_axis::<1>(Add)` |
+| column means | `+⌿m ÷ 3` | `m.reduce(Add).zip_with(&Array::splat(3), Div)` |
 
 A hand-written loop version of the first row runs 5–8 lines. The intended
 workflow is:
@@ -123,7 +124,8 @@ pub type Vector<T, const N: usize> = Array<T, 1, N>;
 * We can't write `Array<T, {R*C}>` or compute result shapes like
   `Array<T, R, {C+1}>`. So concatenation (`,`) and take/drop are deferred.
   Reshape spells out its target shape, and a const assertion checks it.
-* Reduction keeps the reduced axis as length 1 (`R × C → R × 1`). We can't
+* Reduction keeps the reduced axis as length 1 (`R × C → 1 × C` for axis 0,
+  `R × 1` for axis 1). We can't
   "drop a dimension" generically without a rank parameter, so a vector sum is
   `Array<T, 1, 1>` and you call `.item()` to get the scalar. This is NumPy's
   `keepdims=True`. It's consistent but a little noisy.
@@ -151,8 +153,11 @@ Operators and other functions:
 
 | glyph | name | verbose Rust |
 |---|---|---|
-| `f/x` | reduce (last axis) | `x.reduce(F)` · `reduce!(f, x)` |
-| `f\x` | scan (last axis) | `x.scan(F)` · `scan!(f, x)` |
+| `f⌿x` | reduce, axis 0 (down columns; default) | `x.reduce(F)` · `reduce!(f, x)` |
+| `f/x` | reduce, axis 1 (along rows) | `x.reduce_axis::<1>(F)` · `reduce!(f, x, axis = 1)` |
+| `f⍀x` | scan, axis 0 (default) | `x.scan(F)` · `scan!(f, x)` |
+| `f\x` | scan, axis 1 | `x.scan_axis::<1>(F)` · `scan!(f, x, axis = 1)` |
+| `f/[k]x`, `f\[k]x` | explicit axis (input only) | normalised to `⌿ / ⍀ \` |
 | `a f b` | elementwise | `a.zip_with(&b, F)` (operators `&a + &b` also work) |
 | `n` with arrays | scalar extension | `Array::splat(n)` (shape inferred from the other operand) |
 | `1 2 3` | strand / vector literal | `Array::vector([1, 2, 3])` |
@@ -162,7 +167,7 @@ Operators and other functions:
 | `⍉x` | transpose | `x.transpose()` |
 | `a +.× b` | inner (matrix) product | `a.matmul(&b)` |
 | `(f ∘ g) x` | compose, apply | `compose(F, G).call(&x)` (see §7.2) |
-| `f/`, `f\`, `⍉`, `⍴`, `r c⍴` (as `∘` operands) | function values | `Reduce(F)`, `Scan(F)`, `Transpose`, `Shape`, `Reshape::<r, c>` |
+| `f⌿`, `f/`, `f⍀`, `f\`, `⍉`, `⍴`, `r c⍴` (as `∘` operands) | function values | `Reduce(F)`, `Reduce(F).axis::<1>()`, `Scan(F)`, `Scan(F).axis::<1>()`, `Transpose`, `Shape`, `Reshape::<r, c>` |
 | `¯3` | negative literal | `-3` |
 
 ## 7. Evaluation order, reduce and scan
@@ -180,7 +185,7 @@ left-to-right with no precedence (Nial-style, `2 × 3 + 4` = 20) or
 | Sum | `a + b`, `a - b` | left | `+ -` |
 | Product | `a × b`, `a ÷ b`, `a +.× b` | left | `* /` (and Python's `@` for matmul) |
 | MaxMin | `a ⌈ b`, `a ⌊ b` | left | method call `a.max(b)` |
-| Prefix | `f/x`, `f\x`, `⍴x`, `⍉x`, `r c⍴x`, `⍳n`, `(f ∘ g) x` | nests rightward | unary operators / calls |
+| Prefix | `f/x`, `f⌿x`, `f\x`, `f⍀x`, `⍴x`, `⍉x`, `r c⍴x`, `⍳n`, `(f ∘ g) x` | nests rightward | unary operators / calls |
 | Atom | `x`, `3`, `1 2 3`, `( … )` | — | — |
 
 Worked examples:
@@ -247,10 +252,10 @@ left-to-right, composing is spelled out:
   parentheses, `(+/) x`, normalises to `+/x`. A train that is never applied is
   an error.
 * **Rust desugaring** uses the `arrayglyph::train` module. It contains
-  function values `Reduce(F)`, `Scan(F)`, `Transpose`, `Shape`, and
+  function values `Reduce(F)`, `Scan(F)` (axis 0; `.axis::<1>()` for axis 1), `Transpose`, `Shape`, and
   `Reshape::<r, c>`, the helper `compose(f, g)`, and the trait `Monadic`, whose
   `.call` accepts `&Array` or `Array`. So `(+/ ∘ ⍉) m` becomes
-  `compose(Reduce(Add), Transpose).call(&m)`. Shapes are still checked at
+  `compose(Reduce(Add).axis::<1>(), Transpose).call(&m)`. Shapes are still checked at
   compile time through the composition.
 * **ASCII spelling.** In Rust, the spelling *is* `compose(f, g)`. There is no
   `compose!` macro, because a function call is already as short and more
@@ -262,14 +267,40 @@ left-to-right, composing is spelled out:
 
 ### 7.3 Reduce and scan
 
-* **Axis.** Phase 1 always reduces/scans along the **last axis**. An `R × C`
-  array reduces to `R × 1`. To reduce columns, `⍉` first:
-  `+/⍉m` ≡ `m.transpose().reduce(Add)`. A different default has been
-  decided (S, 2026-11-25): a single `reduce!` with an `axis = N` keyword,
-  **default axis 0 (columns)**, no `reduce_rows!`/`reduce_cols!`, and no
-  all-axes reduction in one call. **It is recorded but not implemented
-  yet.** It changes the default result of every existing `reduce!` call, so it
-  ships with the axis work in Phase 2.
+* **Axis (decision S, 2026-11-25; implemented).** One `reduce!` and one
+  `scan!`, each with an optional `axis = N` keyword. **Axis 0 is the default
+  and runs down the columns**: an `R × C` array reduces to `1 × C` (per-column
+  totals, like NumPy's `axis=0`). `axis = 1` runs along each row: `R × 1`.
+  There are no `reduce_rows!`/`reduce_cols!` macros, and reducing both axes
+  is two calls (`reduce!(+, reduce!(+, m), axis = 1)`). `scan!` takes the same
+  keyword with the same default.
+  * **Methods.** `m.reduce(F)` / `m.scan(F)` are axis 0.
+    `m.reduce_axis::<K>(F)` / `m.scan_axis::<K>(F)` take the axis as a const
+    generic. The result shape comes from the trait `AlongAxis<T, R, C>`,
+    implemented only for the marker types `Axis<0>` (`Reduced = Array<T, 1, C>`)
+    and `Axis<1>` (`Reduced = Array<T, R, 1>`). Any other axis is a type error
+    (E0277) with a custom `#[diagnostic::on_unimplemented]` message. The macro
+    keyword must be a literal and expands to the turbofish.
+  * **Glyph spelling: APL's own.** `f⌿` / `f⍀` are axis 0 (APL's "first
+    axis" operators) and `f/` / `f\` are axis 1 (APL's last axis). The APL
+    bracket forms `f/[0]`, `f/[1]`, `f\[0]`, `f\[1]` are accepted as input
+    (0-origin) and printed canonically as `⌿ / ⍀ \`. This keeps every
+    existing glyph program meaning what it did (`+/v` is still a vector sum,
+    `+/(a × b)` is still a dot product) and reads correctly to APL users,
+    while the Rust default follows the decision (axis 0). The price is that
+    the Rust default (`m.reduce(F)`) is the glyph `⌿`, not `/`.
+  * **Vectors.** A vector is `1 × N`, so axis 0 has length 1, and reducing it
+    would return the input unchanged. That is almost always a bug (it is
+    what the old default would have silently done to `reduce!(+, v)`), so
+    **reducing or scanning a length-1 axis is a compile error** (a const
+    assertion, E0080) whose message says to use the other axis. Vectors are
+    reduced with `axis = 1` (`reduce!(+, v, axis = 1).item()`, glyph `+/v`).
+    The same check catches the APL habit `+/+/m`, which here would be a no-op
+    on an `R × 1` column; the grand total is `+/+⌿m`.
+  * **Trains.** `Reduce(F)` / `Scan(F)` are axis 0; `.axis::<K>()` turns
+    them into `ReduceAxis<F, K>` / `ScanAxis<F, K>`. A const-generic default
+    (`Reduce<F, const A: usize = 0>`) was rejected because stable Rust doesn't
+    use defaults for inference, so `Reduce(Add)` would need annotations.
 * **Left fold (decision, follows §7.1).** `f/ x₁ x₂ … xₙ` =
   `((x₁ f x₂) f …) f xₙ`, implemented with `Iterator::reduce`. Writing the
   operator out between the items gives the same answer under §7.1's
@@ -283,8 +314,8 @@ left-to-right, composing is spelled out:
   for future parallel (Rayon) reductions, which are only valid for
   associative ops.
 * **Empty axis.** APL returns the identity element for `+/⍬`. Here
-  `reduce`/`scan` require `COLS > 0` at compile time (const assert), so there is
-  no identity-element machinery yet.
+  `reduce`/`scan` require the chosen axis to have length ≥ 2 at compile time
+  (const assert), so there is no identity-element machinery yet.
 * **Floating point.** Results are exactly the sequential left fold. A future
   parallel variant may differ from it in the last ulp.
 * **`Max`/`Min`** use `PartialOrd`. With NaN, they return the left operand.
@@ -292,8 +323,10 @@ left-to-right, composing is spelled out:
 ## 8. Macro syntax
 
 ```rust
-reduce!(+, x)      // -> (x).reduce(arrayglyph::op::Add)
-scan!(max, x)      // -> (x).scan(arrayglyph::op::Max)
+reduce!(+, x)            // -> (x).reduce(arrayglyph::op::Add)          axis 0
+reduce!(+, x, axis = 1)  // -> (x).reduce_axis::<1>(arrayglyph::op::Add)
+scan!(max, x)            // -> (x).scan(arrayglyph::op::Max)            axis 0
+scan!(max, x, axis = 1)  // -> (x).scan_axis::<1>(arrayglyph::op::Max)
 ```
 
 The accepted operators are `+ - * / max min`. Anything else is a compile error
@@ -312,9 +345,10 @@ implemented as iterator folds. Phase 1 has no `proc-macro` crate.
   table in §6).
 * **Rust → glyph.** This is a small parser for exactly the canonical forms the
   desugarer emits (method chains `.zip_with(&_, Op)`, `.reduce(Op)`, `.scan(Op)`,
+  `.reduce_axis::<k>(Op)`, `.scan_axis::<k>(Op)`,
   `.matmul(&_)`, `.reshape::<r, c>()`, `.transpose()`, `.shape()`, plus
   `Array::vector([..])`, `Array::splat(n)`, `iota::<n>()`, identifiers,
-  parentheses, `reduce!(op, x)` / `scan!(op, x)` macro calls, and
+  parentheses, `reduce!(op, x[, axis = k])` / `scan!(op, x[, axis = k])` macro calls, and
   `compose(…).call(&x)` over `train` function values). It is
   **not** a general Rust parser. Arbitrary Rust, including operator forms like
   `&a + &b`, is rejected with an error, not guessed at.
@@ -372,10 +406,10 @@ pub struct ParseError { pub message: String, pub span: Span }
 
 ## 10. Open questions
 
-1. ~~Axis specification.~~ **Decided (S, 2026-11-25), not yet implemented:**
+1. ~~Axis specification.~~ **Decided (S, 2026-11-25) and implemented:**
    `reduce!(+, m, axis = N)`, default axis 0 (columns), no separate row/col
-   macros, and no all-axes reduction in one call (§7.3). The glyph spelling
-   (`+/[0] m` vs `+⌿ m`) is still open.
+   macros, no all-axes reduction in one call, glyphs `⌿ ⍀` (axis 0) and
+   `/ \` (axis 1), and vectors reduce with `axis = 1` (§7.3).
 2. **Rank polymorphism.** APL functions work at any rank. Should we go through
    shape types (`Array<T, S: Shape>`, fully static but complex type signatures),
    dynamic rank (`ArrayD`, simple but runtime shape errors), or both, with
@@ -391,14 +425,11 @@ pub struct ParseError { pub message: String, pub span: Span }
 ## 11. Roadmap
 
 **Phase 1 (this milestone).** `Array<T, R, C>`, views, elementwise ops, matmul,
-transpose, reshape, `reduce!`/`scan!`, the bidirectional printer, and the
+transpose, reshape, `reduce!`/`scan!` with `axis = 0 | 1`, the bidirectional printer, and the
 `arrayglyph-fmt` CLI.
 
 **Phase 2**
 
-* **Axis-aware reduce/scan** with the decided `axis = N` keyword
-  (`reduce!(+, m, axis = 0)`, default 0 = columns) and matching printer
-  support. The glyph spelling is still to be chosen.
 * **Outer and inner product macros.** `outer!(*, a, b)` (`a ∘.× b`) and a
   general `inner!(+, *, a, b)` (`a +.× b` with any pair of functions; today
   only `+.×` / `matmul` exists).

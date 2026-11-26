@@ -7,8 +7,10 @@
 //!
 //! | glyph | Rust value |
 //! |---|---|
-//! | `f/` | [`Reduce`]`(F)` |
-//! | `f\` | [`Scan`]`(F)` |
+//! | `f⌿` (axis 0) | [`Reduce`]`(F)` |
+//! | `f/` (axis 1) | [`Reduce`]`(F).axis::<1>()` |
+//! | `f⍀` (axis 0) | [`Scan`]`(F)` |
+//! | `f\` (axis 1) | [`Scan`]`(F).axis::<1>()` |
 //! | `⍉` | [`Transpose`] |
 //! | `⍴` | [`Shape`] |
 //! | `r c⍴` | [`Reshape`]`::<r, c>` |
@@ -22,17 +24,18 @@
 //! use arrayglyph::prelude::*;
 //!
 //! let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
-//! // glyph: (+/ ∘ ⍉) m     column sums
-//! let col_sums = compose(Reduce(Add), Transpose);
+//! // glyph: (+/ ∘ ⍉) m     row sums of the transpose = column sums, as a column
+//! let col_sums = compose(Reduce(Add).axis::<1>(), Transpose);
 //! assert_eq!(col_sums.call(&m).as_slice(), &[5, 7, 9]);
+//! assert_eq!(col_sums.call(&m).shape(), (3, 1));
 //! // The composed value is reusable, and equals the prefix form +/⍉m.
-//! assert_eq!(col_sums.call(&m), m.transpose().reduce(Add));
+//! assert_eq!(col_sums.call(&m), m.transpose().reduce_axis::<1>(Add));
 //! ```
 //!
 //! The Rust spelling *is* the ASCII spelling. There is no `compose!` macro.
 
-use crate::Array;
 use crate::op::Dyadic;
+use crate::{AlongAxis, Array, Axis};
 
 /// A one-argument function value that can be applied to an array.
 ///
@@ -42,7 +45,7 @@ use crate::op::Dyadic;
 /// ```
 /// use arrayglyph::prelude::*;
 /// let v = Array::vector([3, 1, 2]);
-/// assert_eq!(Reduce(Max).call(&v).item(), 3);
+/// assert_eq!(Reduce(Max).axis::<1>().call(&v).item(), 3);
 /// ```
 pub trait Monadic<X> {
     /// The result type.
@@ -51,24 +54,77 @@ pub trait Monadic<X> {
     fn call(&self, x: X) -> Self::Output;
 }
 
-/// `f/` as a value: reduce along the last axis with `F` (a left fold). See
-/// [`Array::reduce`].
+/// `f⌿` as a value: reduce along axis 0 (down each column) with `F`, a left
+/// fold. See [`Array::reduce`]. For axis 1 (`f/`), use
+/// [`axis`](Reduce::axis)`::<1>()`.
 ///
 /// ```
 /// use arrayglyph::prelude::*;
-/// assert_eq!(Reduce(Sub).call(&Array::vector([1, 2, 3])).item(), -4);
+/// let m = Array::from_rows([[1, 2], [3, 4]]);
+/// assert_eq!(Reduce(Add).call(&m).as_slice(), &[4, 6]);
+/// assert_eq!(Reduce(Sub).axis::<1>().call(&Array::vector([1, 2, 3])).item(), -4);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Reduce<F>(pub F);
 
-/// `f\` as a value: scan along the last axis with `F`. See [`Array::scan`].
+impl<F> Reduce<F> {
+    /// Picks the axis to reduce along: `0` (the default, `f⌿`) or `1`
+    /// (`f/`). Mirrors `reduce!(op, x, axis = AXIS)`.
+    ///
+    /// ```
+    /// use arrayglyph::prelude::*;
+    /// let m = Array::from_rows([[1, 2], [3, 4]]);
+    /// assert_eq!(Reduce(Add).axis::<1>().call(&m).as_slice(), &[3, 7]);
+    /// ```
+    pub fn axis<const AXIS: usize>(self) -> ReduceAxis<F, AXIS> {
+        ReduceAxis(self.0)
+    }
+}
+
+/// `f/` or `f⌿` as a value with an explicit axis. Build it with
+/// [`Reduce::axis`]. See [`Array::reduce_axis`].
 ///
 /// ```
 /// use arrayglyph::prelude::*;
-/// assert_eq!(Scan(Add).call(&Array::vector([1, 2, 3])).as_slice(), &[1, 3, 6]);
+/// let rows = Reduce(Max).axis::<1>();
+/// assert_eq!(rows.call(&Array::from_rows([[3, 9], [7, 1]])).as_slice(), &[9, 7]);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ReduceAxis<F, const AXIS: usize>(pub F);
+
+/// `f⍀` as a value: scan along axis 0 (down each column) with `F`. See
+/// [`Array::scan`]. For axis 1 (`f\`), use [`axis`](Scan::axis)`::<1>()`.
+///
+/// ```
+/// use arrayglyph::prelude::*;
+/// assert_eq!(Scan(Add).axis::<1>().call(&Array::vector([1, 2, 3])).as_slice(), &[1, 3, 6]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Scan<F>(pub F);
+
+impl<F> Scan<F> {
+    /// Picks the axis to scan along: `0` (the default, `f⍀`) or `1` (`f\`).
+    ///
+    /// ```
+    /// use arrayglyph::prelude::*;
+    /// let m = Array::from_rows([[1, 2], [3, 4]]);
+    /// assert_eq!(Scan(Add).axis::<0>().call(&m), Scan(Add).call(&m));
+    /// ```
+    pub fn axis<const AXIS: usize>(self) -> ScanAxis<F, AXIS> {
+        ScanAxis(self.0)
+    }
+}
+
+/// `f\` or `f⍀` as a value with an explicit axis. Build it with
+/// [`Scan::axis`]. See [`Array::scan_axis`].
+///
+/// ```
+/// use arrayglyph::prelude::*;
+/// let running = Scan(Add).axis::<1>();
+/// assert_eq!(running.call(&iota::<4>()).as_slice(), &[0, 1, 3, 6]);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ScanAxis<F, const AXIS: usize>(pub F);
 
 /// `⍉` as a value. See [`Array::transpose`].
 ///
@@ -127,7 +183,7 @@ pub struct Compose<F, G> {
 /// use arrayglyph::prelude::*;
 /// let m = iota::<6>();
 /// // glyph: (+/ ∘ ⍉ ∘ 2 3⍴) ⍳6
-/// let f = compose(compose(Reduce(Add), Transpose), Reshape::<2, 3>);
+/// let f = compose(compose(Reduce(Add).axis::<1>(), Transpose), Reshape::<2, 3>);
 /// assert_eq!(f.call(&m).as_slice(), &[3, 5, 7]);
 /// ```
 ///
@@ -136,7 +192,7 @@ pub struct Compose<F, G> {
 /// ```compile_fail,E0308
 /// use arrayglyph::prelude::*;
 /// let m: Array<i32, 2, 3> = Array::splat(1);
-/// let col_sums = compose(Reduce(Add), Transpose).call(&m); // 3×1
+/// let col_sums = compose(Reduce(Add).axis::<1>(), Transpose).call(&m); // 3×1
 /// let _ = col_sums + m; // ERROR: 3×1 and 2×3 differ
 /// ```
 ///
@@ -187,10 +243,18 @@ macro_rules! by_ref_and_value {
     };
 }
 
-by_ref_and_value!(Reduce<F>, [F,], where [T: Clone, F: Dyadic<T> + Copy], Array<T, R, 1>,
+by_ref_and_value!(Reduce<F>, [F,], where [T: Clone, F: Dyadic<T> + Copy], Array<T, 1, C>,
     |this, x| x.reduce(this.0));
+by_ref_and_value!(ReduceAxis<F, A>, [F, const A: usize,],
+    where [T: Clone, F: Dyadic<T> + Copy, Axis<A>: AlongAxis<T, R, C>],
+    <Axis<A> as AlongAxis<T, R, C>>::Reduced,
+    |this, x| x.reduce_axis::<A>(this.0));
 by_ref_and_value!(Scan<F>, [F,], where [T: Clone, F: Dyadic<T> + Copy], Array<T, R, C>,
     |this, x| x.scan(this.0));
+by_ref_and_value!(ScanAxis<F, A>, [F, const A: usize,],
+    where [T: Clone, F: Dyadic<T> + Copy, Axis<A>: AlongAxis<T, R, C>],
+    Array<T, R, C>,
+    |this, x| x.scan_axis::<A>(this.0));
 by_ref_and_value!(Transpose, [], where [T: Clone], Array<T, C, R>, |_this, x| x.transpose());
 by_ref_and_value!(Shape, [], where [], (usize, usize), |_this, x| x.shape());
 

@@ -5,7 +5,7 @@
 //! ```
 //!
 //! * `--to-rust` (default) desugars glyph notation: `+/(a × b)` becomes
-//!   `a.zip_with(&b, Mul).reduce(Add)`.
+//!   `a.zip_with(&b, Mul).reduce_axis::<1>(Add)`.
 //! * `--to-glyph` compresses canonical Rust back to glyphs.
 //!
 //! With no `EXPR` arguments it converts stdin line by line, skipping blank
@@ -27,7 +27,7 @@ With no EXPR, reads one expression per line from stdin.
 
 examples:
   arrayglyph-fmt '+/(a × b)'
-  arrayglyph-fmt --to-glyph 'a.zip_with(&b, Mul).reduce(Add)'";
+  arrayglyph-fmt --to-glyph 'a.zip_with(&b, Mul).reduce_axis::<1>(Add)'";
 
 fn main() -> ExitCode {
     let mut to_rust = true;

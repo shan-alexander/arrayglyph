@@ -8,7 +8,7 @@
 //! | `Sum` | `a + b`, `a - b` | left |
 //! | `Product` | `a × b`, `a ÷ b`, `a +.× b` | left |
 //! | `MaxMin` | `a ⌈ b`, `a ⌊ b` | left |
-//! | `Prefix` | `f/x`, `f\x`, `⍴x`, `⍉x`, `r c⍴x`, `⍳n`, `(f ∘ g) x` | nests to the right |
+//! | `Prefix` | `f/x`, `f⌿x`, `f\x`, `f⍀x`, `⍴x`, `⍉x`, `r c⍴x`, `⍳n`, `(f ∘ g) x` | nests to the right |
 //! | `Atom` | `x`, `3`, `1 2 3`, `( … )` | — |
 
 use super::{Expr, ExprKind, Func, LineIndex, ParseError, Span, Train, TrainKind};
@@ -19,8 +19,10 @@ enum Tok {
     /// Number in Rust literal form (`-3`, `2.5`).
     Num(String),
     Func(Func),
-    Slash,
-    Backslash,
+    /// `/` (axis 1), `⌿` (axis 0), or `/[k]`: reduce along the given axis.
+    Slash(usize),
+    /// `\` (axis 1), `⍀` (axis 0), or `\[k]`: scan along the given axis.
+    Backslash(usize),
     Iota,
     Rho,
     Transpose,
@@ -80,9 +82,41 @@ fn lex(src: &str, idx: &LineIndex<'_>) -> Result<Vec<(Span, Tok)>, ParseError> {
             out.push((idx.span(pos, end_of(i)), Tok::PlusTimes));
             continue;
         }
+        if let Some((default_axis, is_reduce)) = match c {
+            '/' => Some((1, true)),
+            '⌿' => Some((0, true)),
+            '\\' => Some((1, false)),
+            '⍀' => Some((0, false)),
+            _ => None,
+        } {
+            // Optional APL-style axis bracket written directly after the
+            // operator: `+/[0] m`. Arrays have axes 0 and 1 only.
+            let mut axis = default_axis;
+            let mut len = 1;
+            if peek(1) == Some('[') {
+                let digit = peek(2);
+                if peek(3) != Some(']') || !matches!(digit, Some('0' | '1')) {
+                    let close = (i + 2..chars.len())
+                        .find(|&j| chars[j].1 == ']')
+                        .map_or(chars.len(), |j| j + 1);
+                    return Err(ParseError::new(
+                        idx.span(chars[i + 1].0, end_of(close)),
+                        "axis must be `[0]` (down the columns) or `[1]` (along the rows)",
+                    ));
+                }
+                axis = usize::from(digit == Some('1'));
+                len = 4;
+            }
+            i += len;
+            let tok = if is_reduce {
+                Tok::Slash(axis)
+            } else {
+                Tok::Backslash(axis)
+            };
+            out.push((idx.span(pos, end_of(i)), tok));
+            continue;
+        }
         let tok = match c {
-            '/' => Tok::Slash,
-            '\\' => Tok::Backslash,
             '⍳' => Tok::Iota,
             '⍴' => Tok::Rho,
             '⍉' => Tok::Transpose,
@@ -157,8 +191,8 @@ fn infix_prec(t: &Tok) -> Option<Prec> {
 /// A monadic function in prefix position.
 #[derive(Debug, Clone, PartialEq)]
 enum FnAtom {
-    Reduce(Func),
-    Scan(Func),
+    Reduce(Func, usize),
+    Scan(Func, usize),
     Shape,
     Transpose,
     Reshape(Vec<usize>),
@@ -167,8 +201,8 @@ enum FnAtom {
 impl FnAtom {
     fn into_train(self, span: Span) -> Train {
         let kind = match self {
-            FnAtom::Reduce(f) => TrainKind::Reduce(f),
-            FnAtom::Scan(f) => TrainKind::Scan(f),
+            FnAtom::Reduce(f, k) => TrainKind::Reduce(f, k),
+            FnAtom::Scan(f, k) => TrainKind::Scan(f, k),
             FnAtom::Shape => TrainKind::Shape,
             FnAtom::Transpose => TrainKind::Transpose,
             FnAtom::Reshape(d) => TrainKind::Reshape(d),
@@ -227,7 +261,7 @@ impl Parser {
             if infix_prec(tok) != Some(level) {
                 break;
             }
-            if matches!(self.peek_at(1), Some(Tok::Slash | Tok::Backslash)) {
+            if matches!(self.peek_at(1), Some(Tok::Slash(_) | Tok::Backslash(_))) {
                 return Err(ParseError::new(
                     self.cur(),
                     "a left argument to `f/` or `f\\` (n-wise reduce) is unsupported; \
@@ -256,8 +290,8 @@ impl Parser {
             Some(Tok::Func(f)) => {
                 let f = *f;
                 let atom = match self.peek_at(1) {
-                    Some(Tok::Slash) => FnAtom::Reduce(f),
-                    Some(Tok::Backslash) => FnAtom::Scan(f),
+                    Some(&Tok::Slash(k)) => FnAtom::Reduce(f, k),
+                    Some(&Tok::Backslash(k)) => FnAtom::Scan(f, k),
                     _ => {
                         return Err(ParseError::new(
                             at,
@@ -432,8 +466,8 @@ impl Parser {
 fn apply_train(t: Train, x: Expr) -> ExprKind {
     let x = Box::new(x);
     match t.kind {
-        TrainKind::Reduce(f) => ExprKind::Reduce(f, x),
-        TrainKind::Scan(f) => ExprKind::Scan(f, x),
+        TrainKind::Reduce(f, k) => ExprKind::Reduce(f, k, x),
+        TrainKind::Scan(f, k) => ExprKind::Scan(f, k, x),
         TrainKind::Shape => ExprKind::Shape(x),
         TrainKind::Transpose => ExprKind::Transpose(x),
         TrainKind::Reshape(d) => ExprKind::Reshape(d, x),
@@ -513,8 +547,12 @@ pub(super) fn print(e: &Expr) -> String {
             format!("{} {} {}", at(a, p), f.glyph(), at(b, p.tighter()))
         }
         ExprKind::MatMul(a, b) => format!("{} +.× {}", at(a, p), at(b, p.tighter())),
-        ExprKind::Reduce(f, x) => format!("{}/{}", f.glyph(), at(x, Prec::Prefix)),
-        ExprKind::Scan(f, x) => format!("{}\\{}", f.glyph(), at(x, Prec::Prefix)),
+        ExprKind::Reduce(f, k, x) => {
+            format!("{}{}{}", f.glyph(), reduce_glyph(*k), at(x, Prec::Prefix))
+        }
+        ExprKind::Scan(f, k, x) => {
+            format!("{}{}{}", f.glyph(), scan_glyph(*k), at(x, Prec::Prefix))
+        }
         ExprKind::Apply(t, x) => format!("({}) {}", print_train(t), at(x, Prec::Prefix)),
     }
 }
@@ -523,8 +561,8 @@ pub(super) fn print(e: &Expr) -> String {
 /// right of `∘` needs parentheses.
 fn print_train(t: &Train) -> String {
     match &t.kind {
-        TrainKind::Reduce(f) => format!("{}/", f.glyph()),
-        TrainKind::Scan(f) => format!("{}\\", f.glyph()),
+        TrainKind::Reduce(f, k) => format!("{}{}", f.glyph(), reduce_glyph(*k)),
+        TrainKind::Scan(f, k) => format!("{}{}", f.glyph(), scan_glyph(*k)),
         TrainKind::Shape => "⍴".to_string(),
         TrainKind::Transpose => "⍉".to_string(),
         TrainKind::Reshape(dims) => {
@@ -540,4 +578,14 @@ fn print_train(t: &Train) -> String {
             format!("{} ∘ {}", print_train(f), right)
         }
     }
+}
+
+/// The canonical reduce operator for an axis: `⌿` (axis 0) or `/` (axis 1).
+fn reduce_glyph(axis: usize) -> char {
+    if axis == 0 { '⌿' } else { '/' }
+}
+
+/// The canonical scan operator for an axis: `⍀` (axis 0) or `\` (axis 1).
+fn scan_glyph(axis: usize) -> char {
+    if axis == 0 { '⍀' } else { '\\' }
 }

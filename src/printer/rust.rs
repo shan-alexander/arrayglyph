@@ -18,8 +18,12 @@ pub(super) fn print(e: &Expr) -> String {
         ExprKind::Dyadic(f, a, b) => {
             format!("{}.zip_with(&{}, {})", print(a), print(b), f.rust_name())
         }
-        ExprKind::Reduce(f, x) => format!("{}.reduce({})", print(x), f.rust_name()),
-        ExprKind::Scan(f, x) => format!("{}.scan({})", print(x), f.rust_name()),
+        ExprKind::Reduce(f, 0, x) => format!("{}.reduce({})", print(x), f.rust_name()),
+        ExprKind::Reduce(f, k, x) => {
+            format!("{}.reduce_axis::<{k}>({})", print(x), f.rust_name())
+        }
+        ExprKind::Scan(f, 0, x) => format!("{}.scan({})", print(x), f.rust_name()),
+        ExprKind::Scan(f, k, x) => format!("{}.scan_axis::<{k}>({})", print(x), f.rust_name()),
         ExprKind::MatMul(a, b) => format!("{}.matmul(&{})", print(a), print(b)),
         ExprKind::Apply(t, x) => format!("{}.call(&{})", print_train(t), print(x)),
     }
@@ -27,8 +31,10 @@ pub(super) fn print(e: &Expr) -> String {
 
 fn print_train(t: &Train) -> String {
     match &t.kind {
-        TrainKind::Reduce(f) => format!("Reduce({})", f.rust_name()),
-        TrainKind::Scan(f) => format!("Scan({})", f.rust_name()),
+        TrainKind::Reduce(f, 0) => format!("Reduce({})", f.rust_name()),
+        TrainKind::Reduce(f, k) => format!("Reduce({}).axis::<{k}>()", f.rust_name()),
+        TrainKind::Scan(f, 0) => format!("Scan({})", f.rust_name()),
+        TrainKind::Scan(f, k) => format!("Scan({}).axis::<{k}>()", f.rust_name()),
         TrainKind::Shape => "Shape".to_string(),
         TrainKind::Transpose => "Transpose".to_string(),
         TrainKind::Reshape(dims) => match dims.as_slice() {
@@ -51,8 +57,8 @@ enum Tok {
 }
 
 fn lex(src: &str, idx: &LineIndex<'_>) -> Result<Vec<(Span, Tok)>, ParseError> {
-    const PUNCT: [&str; 15] = [
-        "::", ".", "(", ")", ",", "&", "<", ">", "[", "]", "-", "!", "+", "*", "/",
+    const PUNCT: [&str; 16] = [
+        "::", ".", "(", ")", ",", "&", "<", ">", "[", "]", "-", "!", "+", "*", "/", "=",
     ];
     let mut out = Vec::new();
     let bytes = src.as_bytes();
@@ -142,8 +148,9 @@ impl Parser {
         }
         Some((k + 1, last))
     }
-    /// fn_value := path::(compose `(` fn_value `,` fn_value `)` | Reduce `(` op `)`
-    ///           | Scan `(` op `)` | Transpose | Shape | Reshape `::<` r `,` c `>`)
+    /// fn_value := path::(compose `(` fn_value `,` fn_value `)`
+    ///           | (Reduce | Scan) `(` op `)` [`.axis::<` k `>()`]
+    ///           | Transpose | Shape | Reshape `::<` r `,` c `>`)
     fn fn_value(&mut self) -> Result<Train, ParseError> {
         let at = self.cur();
         let Some((len, name)) = self.path_tail() else {
@@ -167,10 +174,17 @@ impl Parser {
                 self.eat("(")?;
                 let f = self.op_path()?;
                 self.eat(")")?;
+                let mut axis = 0;
+                if self.is_punct(".") && self.peek_at(1) == Some(&Tok::Ident("axis".into())) {
+                    self.pos += 2;
+                    axis = self.turbofish_axis()?;
+                    self.eat("(")?;
+                    self.eat(")")?;
+                }
                 if name == "Reduce" {
-                    TrainKind::Reduce(f)
+                    TrainKind::Reduce(f, axis)
                 } else {
-                    TrainKind::Scan(f)
+                    TrainKind::Scan(f, axis)
                 }
             }
             "Transpose" => TrainKind::Transpose,
@@ -245,6 +259,26 @@ impl Parser {
             )
         })
     }
+    /// An axis literal, which must be `0` or `1`.
+    fn axis_lit(&mut self) -> Result<usize, ParseError> {
+        let at = self.cur();
+        let k = self.usize_lit()?;
+        if k > 1 {
+            return Err(ParseError::new(
+                Span::new(at.start, self.prev().end),
+                format!("axis must be 0 or 1, found {k}"),
+            ));
+        }
+        Ok(k)
+    }
+    /// `::<k>` with `k` an axis literal.
+    fn turbofish_axis(&mut self) -> Result<usize, ParseError> {
+        self.eat("::")?;
+        self.eat("<")?;
+        let k = self.axis_lit()?;
+        self.eat(">")?;
+        Ok(k)
+    }
     /// `Add`, `op::Add`, or `arrayglyph::op::Add`.
     fn op_path(&mut self) -> Result<Func, ParseError> {
         let at = self.cur();
@@ -303,14 +337,19 @@ impl Parser {
                     self.eat(")")?;
                     ExprKind::MatMul(Box::new(e), Box::new(rhs))
                 }
-                "reduce" | "scan" => {
+                "reduce" | "scan" | "reduce_axis" | "scan_axis" => {
+                    let axis = if m.ends_with("_axis") {
+                        self.turbofish_axis()?
+                    } else {
+                        0
+                    };
                     self.eat("(")?;
                     let f = self.op_path()?;
                     self.eat(")")?;
-                    if m == "reduce" {
-                        ExprKind::Reduce(f, Box::new(e))
+                    if m.starts_with("reduce") {
+                        ExprKind::Reduce(f, axis, Box::new(e))
                     } else {
-                        ExprKind::Scan(f, Box::new(e))
+                        ExprKind::Scan(f, axis, Box::new(e))
                     }
                 }
                 "transpose" | "shape" => {
@@ -376,8 +415,8 @@ impl Parser {
             let x = Box::new(self.postfix()?);
             self.eat(")")?;
             let kind = match t.kind {
-                TrainKind::Reduce(f) => ExprKind::Reduce(f, x),
-                TrainKind::Scan(f) => ExprKind::Scan(f, x),
+                TrainKind::Reduce(f, k) => ExprKind::Reduce(f, k, x),
+                TrainKind::Scan(f, k) => ExprKind::Scan(f, k, x),
                 TrainKind::Shape => ExprKind::Shape(x),
                 TrainKind::Transpose => ExprKind::Transpose(x),
                 TrainKind::Reshape(d) => ExprKind::Reshape(d, x),
@@ -441,14 +480,23 @@ impl Parser {
                 let f = self.macro_op()?;
                 self.eat(",")?;
                 let x = self.postfix()?;
+                let mut axis = 0;
                 if self.is_punct(",") {
                     self.pos += 1;
+                    if self.peek() == Some(&Tok::Ident("axis".into())) {
+                        self.pos += 1;
+                        self.eat("=")?;
+                        axis = self.axis_lit()?;
+                        if self.is_punct(",") {
+                            self.pos += 1;
+                        }
+                    }
                 }
                 self.eat(")")?;
                 if name == "reduce" {
-                    ExprKind::Reduce(f, Box::new(x))
+                    ExprKind::Reduce(f, axis, Box::new(x))
                 } else {
-                    ExprKind::Scan(f, Box::new(x))
+                    ExprKind::Scan(f, axis, Box::new(x))
                 }
             }
             _ if self.is_punct("!") || self.is_punct("(") || self.is_punct("::") => {

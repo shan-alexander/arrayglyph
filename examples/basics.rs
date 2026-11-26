@@ -11,14 +11,20 @@ fn main() {
     let qty: Array<f64, 2, 3> = Array::from_rows([[2.0, 1.0, 4.0], [3.0, 0.0, 1.0]]);
 
     // +/(prices × qty)     (per-row totals)
-    let totals = reduce!(+, prices.zip_with(&qty, Mul));
+    let totals = reduce!(+, prices.zip_with(&qty, Mul), axis = 1);
     println!("totals per order (+/(prices × qty)):\n{totals}\n");
 
     // ⌈\ running max along each row
-    println!("running max (⌈\\prices):\n{}\n", scan!(max, prices));
+    println!(
+        "running max (⌈\\prices):\n{}\n",
+        scan!(max, prices, axis = 1)
+    );
 
     // Left to right, like Rust: -/ 1 2 3 = (1 - 2) - 3 = -4
-    println!("-/1 2 3 = {}", reduce!(-, Array::vector([1, 2, 3])).item());
+    println!(
+        "-/1 2 3 = {}",
+        reduce!(-, Array::vector([1, 2, 3]), axis = 1).item()
+    );
 
     // Matrix product; the inner dimension is checked at compile time.
     let m = iota::<6>().reshape::<2, 3>();
@@ -26,7 +32,7 @@ fn main() {
     println!("\nm +.× ⍉m where m←2 3⍴⍳6:\n{mmt}\n");
 
     // Explicit composition: (+/ ∘ ⍉) applies ⍉ first, then +/.
-    let col_sums = compose(Reduce(Add), Transpose);
+    let col_sums = compose(Reduce(Add).axis::<1>(), Transpose);
     println!("(+/ ∘ ⍉) m:\n{}\n", col_sums.call(&m));
 
     // The pretty-printer, both directions.
@@ -38,6 +44,8 @@ fn main() {
         "+/x - y",
         "a +.× ⍉b",
         "(+/ ∘ ⍉) m",
+        "+⌿m",
+        "+/[1] m",
     ] {
         let rust = glyph_to_rust(glyph).expect("valid glyph");
         let back = rust_to_glyph(&rust).expect("canonical rust");

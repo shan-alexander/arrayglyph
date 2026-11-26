@@ -9,11 +9,11 @@
 //! use arrayglyph::printer::{glyph_to_rust, rust_to_glyph};
 //!
 //! let rust = glyph_to_rust("+/(a × b)").unwrap();
-//! assert_eq!(rust, "a.zip_with(&b, Mul).reduce(Add)");
+//! assert_eq!(rust, "a.zip_with(&b, Mul).reduce_axis::<1>(Add)");
 //! assert_eq!(rust_to_glyph(&rust).unwrap(), "+/(a × b)");
 //!
 //! // Rust-style precedence, evaluated left to right:
-//! assert_eq!(glyph_to_rust("+/a × b").unwrap(), "a.reduce(Add).zip_with(&b, Mul)");
+//! assert_eq!(glyph_to_rust("+/a × b").unwrap(), "a.reduce_axis::<1>(Add).zip_with(&b, Mul)");
 //! assert_eq!(
 //!     glyph_to_rust("2 × 3 + x").unwrap(),
 //!     "Array::splat(2).zip_with(&Array::splat(3), Mul).zip_with(&x, Add)"
@@ -27,12 +27,18 @@
 //! * `⌈ ⌊` bind tighter still, like a method call: `a ⌈ b + c` is
 //!   `(a ⌈ b) + c`.
 //! * All infix operators are left-associative: `a - b - c` is `(a - b) - c`.
-//! * Prefix forms (`f/`, `f\`, `⍴`, `⍉`, `r c⍴`, `⍳n`) bind tighter than any
+//! * Prefix forms (`f/`, `f⌿`, `f\`, `f⍀`, `⍴`, `⍉`, `r c⍴`, `⍳n`) bind tighter than any
 //!   infix operator, like Rust's unary operators. So `+/a × b` is
 //!   `(+/a) × b`, and the dot product is written `+/(a × b)`.
 //! * `∘` composes functions explicitly: `(+/ ∘ ⍉) m` applies `⍉`, then `+/`,
-//!   and becomes `compose(Reduce(Add), Transpose).call(&m)`. An applied
+//!   and becomes `compose(Reduce(Add).axis::<1>(), Transpose).call(&m)`. An applied
 //!   composition binds like any other prefix form.
+//!
+//! * Reductions and scans name their axis APL-style: `f⌿` and `f⍀` work
+//!   along **axis 0** (down each column; the Rust default, `x.reduce(F)`),
+//!   `f/` and `f\` along **axis 1** (along each row,
+//!   `x.reduce_axis::<1>(F)`). The bracket forms `f/[0]`, `f/[1]`, `f\[0]`
+//!   and `f\[1]` are accepted as input and printed in the canonical form.
 //!
 //! Parentheses group. The glyph printer emits only the parentheses that this
 //! table needs. See the crate's `DESIGN.md` §6 and §7 for the full glyph
@@ -185,10 +191,10 @@ impl Func {
 /// use arrayglyph::printer::{Expr, ExprKind, Func};
 ///
 /// let e = Expr::parse_glyph("+/x").unwrap();
-/// let ExprKind::Reduce(Func::Add, inner) = &e.kind else { panic!() };
+/// let ExprKind::Reduce(Func::Add, 1, inner) = &e.kind else { panic!() };
 /// assert_eq!(inner.kind, ExprKind::Ident("x".into()));
 /// assert_eq!(inner.span.start.col, 3);
-/// assert_eq!(e.to_rust(), "x.reduce(Add)");
+/// assert_eq!(e.to_rust(), "x.reduce_axis::<1>(Add)");
 /// assert_eq!(e.to_glyph(), "+/x");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -225,10 +231,13 @@ pub enum ExprKind {
     Reshape(Vec<usize>, Box<Expr>),
     /// `a f b`, which becomes `a.zip_with(&b, F)`.
     Dyadic(Func, Box<Expr>, Box<Expr>),
-    /// `f/x`, which becomes `x.reduce(F)`.
-    Reduce(Func, Box<Expr>),
-    /// `f\x`, which becomes `x.scan(F)`.
-    Scan(Func, Box<Expr>),
+    /// A reduction along an axis (`0` or `1`). `f⌿x` (axis 0, down the
+    /// columns) becomes `x.reduce(F)`; `f/x` (axis 1, along the rows)
+    /// becomes `x.reduce_axis::<1>(F)`. `f/[k]x` is accepted as input.
+    Reduce(Func, usize, Box<Expr>),
+    /// A scan along an axis. `f⍀x` (axis 0) becomes `x.scan(F)`; `f\x`
+    /// (axis 1) becomes `x.scan_axis::<1>(F)`.
+    Scan(Func, usize, Box<Expr>),
     /// `a +.× b`, which becomes `a.matmul(&b)`.
     MatMul(Box<Expr>, Box<Expr>),
     /// `(f ∘ g) x`: applies a composed function, which becomes
@@ -262,15 +271,17 @@ pub struct Train {
 /// let e = Expr::parse_glyph("(⌈\\ ∘ 2 3⍴) v").unwrap();
 /// let ExprKind::Apply(t, _) = &e.kind else { panic!() };
 /// let TrainKind::Compose(f, g) = &t.kind else { panic!() };
-/// assert_eq!(f.kind, TrainKind::Scan(Func::Max));
+/// assert_eq!(f.kind, TrainKind::Scan(Func::Max, 1));
 /// assert_eq!(g.kind, TrainKind::Reshape(vec![2, 3]));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TrainKind {
-    /// `f/`, which becomes `Reduce(F)`.
-    Reduce(Func),
-    /// `f\`, which becomes `Scan(F)`.
-    Scan(Func),
+    /// `f⌿` (axis 0), which becomes `Reduce(F)`, or `f/` (axis 1), which
+    /// becomes `Reduce(F).axis::<1>()`.
+    Reduce(Func, usize),
+    /// `f⍀` (axis 0), which becomes `Scan(F)`, or `f\` (axis 1), which
+    /// becomes `Scan(F).axis::<1>()`.
+    Scan(Func, usize),
     /// `⍴`, which becomes `Shape`.
     Shape,
     /// `⍉`, which becomes `Transpose`.
@@ -317,7 +328,9 @@ impl Expr {
     ///
     /// ```
     /// use arrayglyph::printer::Expr;
-    /// let e = Expr::parse_rust("reduce!(max, v)").unwrap();
+    /// let e = Expr::parse_rust("reduce!(max, m)").unwrap();
+    /// assert_eq!(e.to_glyph(), "⌈⌿m"); // default axis 0
+    /// let e = Expr::parse_rust("reduce!(max, v, axis = 1)").unwrap();
     /// assert_eq!(e.to_glyph(), "⌈/v");
     /// ```
     pub fn parse_rust(src: &str) -> Result<Expr, ParseError> {
@@ -407,7 +420,7 @@ impl std::error::Error for ParseError {}
 ///
 /// ```
 /// use arrayglyph::printer::glyph_to_rust;
-/// assert_eq!(glyph_to_rust("+\\⍳5").unwrap(), "iota::<5>().scan(Add)");
+/// assert_eq!(glyph_to_rust("+\\⍳5").unwrap(), "iota::<5>().scan_axis::<1>(Add)");
 /// assert_eq!(glyph_to_rust("a +.× ⍉b").unwrap(), "a.matmul(&b.transpose())");
 /// ```
 pub fn glyph_to_rust(src: &str) -> Result<String, ParseError> {
@@ -424,7 +437,7 @@ pub fn glyph_to_rust(src: &str) -> Result<String, ParseError> {
 /// ```
 /// use arrayglyph::printer::rust_to_glyph;
 /// assert_eq!(
-///     rust_to_glyph("a.zip_with(&Array::splat(2), Mul).scan(Max)").unwrap(),
+///     rust_to_glyph("a.zip_with(&Array::splat(2), Mul).scan_axis::<1>(Max)").unwrap(),
 ///     "⌈\\(a × 2)"
 /// );
 /// assert!(rust_to_glyph("for i in 0..n {}").is_err());
@@ -481,7 +494,7 @@ mod span_tests {
         assert_eq!(e.span.slice(src), src);
         assert_eq!((lc(e.span.start), lc(e.span.end)), ((1, 1), (2, 8)));
 
-        let ExprKind::Reduce(_, body) = &e.kind else {
+        let ExprKind::Reduce(_, _, body) = &e.kind else {
             panic!("expected reduce")
         };
         assert_eq!(body.span.slice(src), "(a\n  × ⍳3)");
@@ -535,6 +548,17 @@ mod span_tests {
     }
 
     #[test]
+    fn axis_operator_spans_cover_the_bracket() {
+        let src = "+/[0] m\n + ⌈⍀ m";
+        let spans = glyph::token_spans(src).unwrap();
+        let texts: Vec<&str> = spans.iter().map(|s| s.slice(src)).collect();
+        assert_eq!(texts, ["+", "/[0]", "m", "+", "⌈", "⍀", "m"]);
+        let err = Expr::parse_glyph("x +\n +/[7] m").unwrap_err();
+        assert_eq!(err.span.slice("x +\n +/[7] m"), "[7]");
+        assert_eq!(lc(err.span.start), (2, 4));
+    }
+
+    #[test]
     fn train_spans_on_multibyte_multiline_input() {
         let src = "(⌈\\ ∘\n ⍉) m";
         let e = Expr::parse_glyph(src).unwrap();
@@ -558,10 +582,10 @@ mod span_tests {
 
     #[test]
     fn rust_side_spans() {
-        let src = "a.zip_with(\n  &b, Mul)\n .reduce(Add)";
+        let src = "a.zip_with(\n  &b, Mul)\n .reduce_axis::<1>(Add)";
         let e = Expr::parse_rust(src).unwrap();
         assert_eq!(e.span.slice(src), src);
-        let ExprKind::Reduce(_, inner) = &e.kind else {
+        let ExprKind::Reduce(_, _, inner) = &e.kind else {
             panic!()
         };
         assert_eq!(inner.span.slice(src), "a.zip_with(\n  &b, Mul)");
