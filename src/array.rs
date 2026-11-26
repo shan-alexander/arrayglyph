@@ -1058,6 +1058,47 @@ impl_binop!(Sub, sub, Sub, "-");
 impl_binop!(Mul, mul, Mul, "*");
 impl_binop!(Div, div, Div, "/");
 
+/// Elementwise operators with a scalar on the right: `&m * 2.0`, `m - 1`.
+/// This is APL scalar extension without spelling out `Array::splat`.
+/// Implemented for the primitive number types. Because several element
+/// types qualify, an array of unsuffixed literals may need its element type
+/// spelled out once (`1.0_f64`).
+///
+/// ```
+/// use arrayglyph::Array;
+/// let m = Array::from_rows([[1.0_f64, 2.0], [3.0, 4.0]]);
+/// assert_eq!((&m * 2.0).as_slice(), &[2.0, 4.0, 6.0, 8.0]);
+/// assert_eq!((&m - 1.0).as_slice(), &[0.0, 1.0, 2.0, 3.0]);
+/// assert_eq!((m / 2.0).as_slice(), &[0.5, 1.0, 1.5, 2.0]);
+/// assert_eq!((Array::vector([1_i32, 2]) + 10).as_slice(), &[11, 12]);
+/// ```
+macro_rules! impl_scalar_ops {
+    ($($t:ty),*) => {$(
+        impl_scalar_ops!(@op $t, Add, add);
+        impl_scalar_ops!(@op $t, Sub, sub);
+        impl_scalar_ops!(@op $t, Mul, mul);
+        impl_scalar_ops!(@op $t, Div, div);
+    )*};
+    (@op $t:ty, $trait:ident, $method:ident) => {
+        impl<const ROWS: usize, const COLS: usize> core::ops::$trait<$t> for Array<$t, ROWS, COLS> {
+            type Output = Self;
+            fn $method(self, rhs: $t) -> Self {
+                self.map(|x| core::ops::$trait::$method(x, rhs))
+            }
+        }
+        impl<const ROWS: usize, const COLS: usize> core::ops::$trait<$t> for &Array<$t, ROWS, COLS> {
+            type Output = Array<$t, ROWS, COLS>;
+            fn $method(self, rhs: $t) -> Array<$t, ROWS, COLS> {
+                self.clone().map(|x| core::ops::$trait::$method(x, rhs))
+            }
+        }
+    };
+}
+
+impl_scalar_ops!(
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64
+);
+
 impl<T: core::ops::Neg<Output = T>, const ROWS: usize, const COLS: usize> core::ops::Neg
     for Array<T, ROWS, COLS>
 {

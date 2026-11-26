@@ -237,3 +237,15 @@ fn mean_along_each_axis() {
         &[1, 3]
     );
 }
+
+#[test]
+fn scalar_operators() {
+    let m = Array::from_rows([[2.0_f64, 4.0], [6.0, 8.0]]);
+    assert_eq!((&m + 1.0).as_slice(), &[3.0, 5.0, 7.0, 9.0]);
+    assert_eq!((&m - 1.0).as_slice(), &[1.0, 3.0, 5.0, 7.0]);
+    assert_eq!((&m * 0.5).as_slice(), &[1.0, 2.0, 3.0, 4.0]);
+    assert_eq!((&m / 2.0).as_slice(), &[1.0, 2.0, 3.0, 4.0]);
+    // Same as the canonical scalar-extension spelling `m × 2`.
+    assert_eq!(&m * 2.0, m.zip_with(&Array::splat(2.0), Mul));
+    assert_eq!((Array::vector([7_u8, 9]) / 2).as_slice(), &[3, 4]);
+}
