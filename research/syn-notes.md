@@ -107,3 +107,21 @@ arrayglyph already defines reduce/scan as right folds (`rfold`; DESIGN.md §7: `
 **Phase 1 blocker.** None. The current printer is already a hand-rolled R-to-L recursive-descent parser emitting method chains; reduce/scan are `rfold`. Changing evaluation order would be a breaking semantic rewrite, not something Phase 1 needs in order to compile. Do not change Phase 1 build behaviour.
 
 **Recommendation.** Keep one uniform rule: in glyph text, no infix precedence, the right argument extends as far as parentheses allow, and reduction/scan stay right folds so `-/v` matches inserted `-`. Document the `2 × 3 + 4` = 14 gotcha; parenthesize freely in teaching examples; add a grouping lint later. Do not add an L-to-R or Rust-precedence dialect. rustc never sees the glyph order; the pretty-printer is how Rust readers check their work. The unlearning cost is real, but smaller than two meanings for the same glyphs, or a reduction that disagrees with its own expanded form.
+
+## Design decisions
+
+### Axis syntax for reductions (decided 2026-11-25 by S)
+
+Answers design question 1 (axis syntax).
+
+- Use a **single `reduce!` macro** with an `axis = N` keyword parameter, e.g. `reduce!(+, m, axis = 0)`.
+- **Default axis is 0, meaning columns.** This is a column-major default, in the spirit of APL's last-axis default but explicitly column-oriented for Iota.
+- **No separate `reduce_rows!` / `reduce_cols!` macros.**
+- Reducing both axes at once is **not supported in one call**. It takes two sequential reductions.
+
+### Evaluation order (decided 2026-11-25 by S)
+
+Answers design question 2 (evaluation order). This overrides the "keep right-to-left" recommendation above.
+
+- **Go left-to-right to match Rust convention.** Do not adopt APL's right-to-left rule.
+- **Support explicit compose as a visible operator** for building trains, so composition stays available without relying on implicit right-to-left parsing.
