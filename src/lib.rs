@@ -34,6 +34,7 @@ mod array;
 mod macros;
 pub mod op;
 pub mod printer;
+pub mod table;
 pub mod train;
 pub mod view;
 

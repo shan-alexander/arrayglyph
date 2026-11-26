@@ -249,3 +249,27 @@ fn scalar_operators() {
     assert_eq!(&m * 2.0, m.zip_with(&Array::splat(2.0), Mul));
     assert_eq!((Array::vector([7_u8, 9]) / 2).as_slice(), &[3, 4]);
 }
+
+#[test]
+fn table_parses_labelled_csv_and_reports_errors() {
+    use arrayglyph::table::Table;
+    let csv = "\n# comment\nday , A , B\n\nMon, 1.5, 2\n# mid comment\nTue, -3, 4.25\n";
+    let t: Table<f64, 2, 2> = Table::parse_csv(csv).unwrap();
+    assert_eq!(t.index_name, "day");
+    assert_eq!(t.col_labels, ["A", "B"]);
+    assert_eq!(t.row_labels, ["Mon", "Tue"]);
+    assert_eq!(t.data.as_slice(), &[1.5, 2.0, -3.0, 4.25]);
+
+    let e = |s: &str| Table::<i32, 2, 2>::parse_csv(s).unwrap_err().to_string();
+    assert_eq!(e(""), "csv: no header line");
+    assert_eq!(
+        e("d,a\nx,1"),
+        "csv line 1: expected 2 value columns, found 1"
+    );
+    assert_eq!(e("d,a,b\nx,1"), "csv line 2: expected 2 values, found 1");
+    assert_eq!(e("d,a,b\nx,1,2"), "csv: expected 2 data rows, found 1");
+    assert_eq!(
+        e("d,a,b\nx,1,2\ny,3,z"),
+        "csv line 3: `z` is not a valid number"
+    );
+}
