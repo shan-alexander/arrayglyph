@@ -128,10 +128,15 @@ cargo run --bin arrayglyph-fmt -- '+/a × b'
 
 ## Examples
 
-Each one is short, commented, and self-contained:
+Each one is short, commented, and self-contained. The showcase's data,
+[`examples/data/weather.csv`](examples/data/weather.csv), is **synthetic
+sample data** made up for the demo, not real measurements.
+[`examples/WISHLIST.md`](examples/WISHLIST.md) lists the features the
+showcase wanted, and which of them now exist.
 
 | example | shows |
 |---|---|
+| **`cargo run --example showcase`** | **the full tour on a small dataset: a labelled CSV (14 days × 5 cities of synthetic temperatures) loaded into `Array<f64, 14, 5>`, per-city (axis 0) and per-day (axis 1) statistics, a `∘` train for weekly means, and every computation shown as glyph next to the verbose Rust that runs** |
 | `cargo run --example shaped_array` | construction, shapes, elementwise ops, `matmul`, and the compile error a shape mismatch causes |
 | `cargo run --example reduce_axis` | `reduce!`/`scan!` with `axis = 0` (default, columns) vs `axis = 1` (rows) |
 | `cargo run --example compose` | building trains with `∘` / `compose(f, g)` |

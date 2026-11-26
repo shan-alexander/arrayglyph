@@ -1,0 +1,18 @@
+# SYNTHETIC SAMPLE DATA - generated for the arrayglyph showcase example.
+# Plausible-looking daily high temperatures (deg C) for 14 days in five cities.
+# These are NOT real measurements; do not use them for anything but demos.
+day,Oslo,London,New York,Tokyo,Sydney
+Nov 10,2.6,11.8,9.6,14.5,21.0
+Nov 11,2.2,13.1,10.3,16.2,22.5
+Nov 12,2.8,12.4,7.2,16.9,24.0
+Nov 13,3.2,8.8,5.2,14.5,22.8
+Nov 14,3.1,9.3,7.5,13.4,23.9
+Nov 15,3.0,8.5,10.7,14.6,26.6
+Nov 16,1.3,7.9,9.3,14.2,27.0
+Nov 17,1.5,7.9,7.4,13.3,28.6
+Nov 18,-0.1,9.0,8.3,11.1,27.0
+Nov 19,2.2,5.9,7.6,12.0,24.2
+Nov 20,2.1,7.2,5.3,14.0,25.9
+Nov 21,2.7,10.3,6.8,14.0,22.6
+Nov 22,2.5,8.8,6.3,11.7,21.5
+Nov 23,0.4,10.9,3.3,10.0,23.5
