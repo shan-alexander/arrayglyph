@@ -122,9 +122,21 @@ So the dot product is written `+/(a × b)`. Reductions are left folds:
 ```sh
 cargo test                       # unit, integration, doc and compile_fail tests
 cargo clippy --all-targets       # lint (clean)
-cargo run --example basics       # tour
+cargo run --example basics       # quick tour
 cargo run --bin arrayglyph-fmt -- '+/a × b'
 ```
+
+## Examples
+
+Each one is short, commented, and self-contained:
+
+| example | shows |
+|---|---|
+| `cargo run --example shaped_array` | construction, shapes, elementwise ops, `matmul`, and the compile error a shape mismatch causes |
+| `cargo run --example reduce_axis` | `reduce!`/`scan!` with `axis = 0` (default, columns) vs `axis = 1` (rows) |
+| `cargo run --example compose` | building trains with `∘` / `compose(f, g)` |
+| `cargo run --example pretty_print` | glyph → verbose Rust and back |
+| `cargo run --example basics` | a quick tour of all of the above |
 
 ## License
 
