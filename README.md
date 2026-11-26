@@ -133,7 +133,9 @@ cargo run --bin arrayglyph-fmt -- '+/a × b'
 
 Each one is short, commented, and self-contained. The showcase's data,
 [`examples/data/weather.csv`](examples/data/weather.csv), is **synthetic
-sample data** made up for the demo, not real measurements.
+sample data** made up for the demo, not real measurements. A walkthrough of
+the showcase, with each glyph next to the Rust it stands for, is
+[`examples/SHOWCASE.md`](examples/SHOWCASE.md).
 [`examples/WISHLIST.md`](examples/WISHLIST.md) lists the features the
 showcase wanted, and which of them now exist.
 
