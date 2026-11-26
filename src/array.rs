@@ -479,9 +479,12 @@ impl<T, const ROWS: usize, const COLS: usize> Array<T, ROWS, COLS> {
         })
     }
 
-    /// `f/ x`: reduces each row (the **last axis**) with `f`, using **APL
-    /// right-to-left** order: `f/ a b c = a f (b f c)`. It is implemented as
-    /// [`DoubleEndedIterator::rfold`].
+    /// `f/ x`: reduces each row (the **last axis**) with `f` as a **left
+    /// fold**: `f/ a b c = (a f b) f c`. This matches Rust's left-to-right
+    /// convention and [`Iterator::reduce`], which implements it.
+    ///
+    /// For associative ops (`+ × ⌈ ⌊`) this is the familiar result. For
+    /// `-` and `÷` it differs from APL, which uses a right fold.
     ///
     /// The reduced axis is kept with length 1 (`R × C → R × 1`). For a
     /// vector, call [`item`](Array::item) on the `1 × 1` result. `COLS` must
@@ -491,8 +494,8 @@ impl<T, const ROWS: usize, const COLS: usize> Array<T, ROWS, COLS> {
     /// use arrayglyph::{op::{Add, Sub}, Array};
     /// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
     /// assert_eq!(m.reduce(Add).as_slice(), &[6, 15]);
-    /// // Non-associative: -/ 1 2 3  =  1 - (2 - 3)  =  2
-    /// assert_eq!(Array::vector([1, 2, 3]).reduce(Sub).item(), 2);
+    /// // Left fold: -/ 1 2 3  =  (1 - 2) - 3  =  -4
+    /// assert_eq!(Array::vector([1, 2, 3]).reduce(Sub).item(), -4);
     /// ```
     ///
     /// ```compile_fail,E0080
@@ -511,24 +514,23 @@ impl<T, const ROWS: usize, const COLS: usize> Array<T, ROWS, COLS> {
             )
         };
         Array {
-            data: self.rows().map(rfold_row::<T, O>).collect(),
+            data: self
+                .rows()
+                .map(|row| row.iter().cloned().reduce(O::apply).expect("COLS > 0"))
+                .collect(),
         }
     }
 
     /// `f\ x`: scans each row (the **last axis**). Element `i` equals `f/` of
-    /// the first `i + 1` elements, so it matches APL even for
-    /// non-associative `f`.
-    ///
-    /// Associative ops use the O(n) running fold ([`Iterator::scan`]).
-    /// Non-associative ops (`-`, `÷`) fold each prefix right-to-left, which is
-    /// O(n²). `COLS` must be greater than 0, and that is checked at compile
-    /// time.
+    /// the first `i + 1` elements. Because `f/` is a left fold, that is the
+    /// running left fold, computed in O(n) with [`Iterator::scan`] for every
+    /// op. `COLS` must be greater than 0, and that is checked at compile time.
     ///
     /// ```
     /// use arrayglyph::{op::{Add, Sub}, Array};
     /// assert_eq!(Array::vector([1, 2, 3, 4]).scan(Add).as_slice(), &[1, 3, 6, 10]);
-    /// // APL: -\ 1 2 3  is  1 ¯1 2
-    /// assert_eq!(Array::vector([1, 2, 3]).scan(Sub).as_slice(), &[1, -1, 2]);
+    /// // -\ 1 2 3  is  1, 1-2, (1-2)-3  =  1 ¯1 ¯4
+    /// assert_eq!(Array::vector([1, 2, 3]).scan(Sub).as_slice(), &[1, -1, -4]);
     /// ```
     ///
     /// ```compile_fail,E0080
@@ -543,28 +545,16 @@ impl<T, const ROWS: usize, const COLS: usize> Array<T, ROWS, COLS> {
         const { assert!(COLS > 0, "scan: cannot scan a zero-length axis (COLS == 0)") };
         let mut data = Vec::with_capacity(ROWS * COLS);
         for row in self.rows() {
-            if O::ASSOCIATIVE {
-                let mut it = row.iter().cloned();
-                let first = it.next().expect("COLS > 0");
-                data.push(first.clone());
-                data.extend(it.scan(first, |acc, x| {
-                    *acc = O::apply(acc.clone(), x);
-                    Some(acc.clone())
-                }));
-            } else {
-                data.extend((1..=COLS).map(|k| rfold_row::<T, O>(&row[..k])));
-            }
+            let mut it = row.iter().cloned();
+            let first = it.next().expect("COLS > 0");
+            data.push(first.clone());
+            data.extend(it.scan(first, |acc, x| {
+                *acc = O::apply(acc.clone(), x);
+                Some(acc.clone())
+            }));
         }
         Self { data }
     }
-}
-
-/// Right-to-left fold of a non-empty slice: `a f (b f (… f z))`.
-fn rfold_row<T: Clone, O: Dyadic<T>>(row: &[T]) -> T {
-    let (last, init) = row.split_last().expect("non-empty row");
-    init.iter()
-        .cloned()
-        .rfold(last.clone(), |acc, x| O::apply(x, acc))
 }
 
 impl<T: Clone, const ROWS: usize, const COLS: usize> Array<T, ROWS, COLS> {

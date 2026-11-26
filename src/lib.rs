@@ -4,8 +4,8 @@
 //!
 //! * [`Array<T, ROWS, COLS>`](Array) is an owned, `Vec`-backed 2-D array. Shape
 //!   mismatches in elementwise ops, `matmul`, and `reshape` are **compile errors**.
-//! * [`reduce!`] and [`scan!`] are APL's `f/` and `f\` along the last axis,
-//!   with right-to-left semantics.
+//! * [`reduce!`] and [`scan!`] are `f/` and `f\` along the last axis, as
+//!   left folds (left to right, like Rust).
 //! * [`printer`] translates glyph notation (`+/a × b`) to verbose Rust
 //!   (`a.zip_with(&b, Mul).reduce(Add)`) and back.
 //!
@@ -14,7 +14,7 @@
 //!
 //! let a = Array::vector([1, 2, 3]);
 //! let b = Array::vector([4, 5, 6]);
-//! // +/a × b   (dot product)
+//! // +/(a × b)   (dot product; prefix `+/` binds tighter than `×`)
 //! let dot = reduce!(+, a.zip_with(&b, Mul)).item();
 //! assert_eq!(dot, 32);
 //! ```

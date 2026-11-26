@@ -48,22 +48,22 @@ macro_rules! __glyph_op {
     };
 }
 
-/// `f/ x`: reduces along the **last axis**, right to left.
+/// `f/ x`: reduces along the **last axis** as a left fold.
 ///
 /// `reduce!(op, array)` expands to `array.reduce(Op)` (see
 /// [`Array::reduce`](crate::Array::reduce)), which is a
-/// [`rfold`](DoubleEndedIterator::rfold) over each row. An `R × C` array
+/// left fold ([`Iterator::reduce`]) over each row. An `R × C` array
 /// becomes `R × 1`. For vectors, call `.item()` to get the scalar.
 ///
-/// **Semantics:** `f/ a b c = a f (b f c)`. For associative `f` this is an
-/// ordinary fold. For `-` and `/` the result follows APL, not a left fold:
+/// **Semantics:** `f/ a b c = (a f b) f c`, left to right as in Rust. For
+/// `-` and `/` this differs from APL's right fold:
 ///
 /// ```
 /// use arrayglyph::{reduce, Array};
 ///
 /// let v = Array::vector([1, 2, 3]);
 /// assert_eq!(reduce!(+, v).item(), 6);
-/// assert_eq!(reduce!(-, v).item(), 2);     // 1 - (2 - 3), APL -/1 2 3
+/// assert_eq!(reduce!(-, v).item(), -4);    // (1 - 2) - 3
 /// assert_eq!(reduce!(max, v).item(), 3);
 ///
 /// let m = Array::from_rows([[1, 2], [3, 4]]);
@@ -87,7 +87,7 @@ macro_rules! reduce {
 ///
 /// `scan!(op, array)` expands to `array.scan(Op)` (see
 /// [`Array::scan`](crate::Array::scan)). Element `i` of each row is `f/` of the
-/// first `i + 1` elements, so non-associative ops match APL. The shape
+/// first `i + 1` elements, which is the running left fold. The shape
 /// doesn't change.
 ///
 /// ```
@@ -96,7 +96,7 @@ macro_rules! reduce {
 /// let v = Array::vector([3, 1, 4, 1, 5]);
 /// assert_eq!(scan!(+, v).as_slice(), &[3, 4, 8, 9, 14]);
 /// assert_eq!(scan!(max, v).as_slice(), &[3, 3, 4, 4, 5]);
-/// assert_eq!(scan!(-, Array::vector([1, 2, 3])).as_slice(), &[1, -1, 2]);
+/// assert_eq!(scan!(-, Array::vector([1, 2, 3])).as_slice(), &[1, -1, -4]);
 /// ```
 ///
 /// ```compile_fail

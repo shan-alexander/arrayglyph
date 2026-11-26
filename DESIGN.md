@@ -10,7 +10,7 @@ three layers:
 2. **A small macro surface** (`reduce!`, `scan!`) that gives APL's `f/` and `f\`
    a compact spelling and lowers to ordinary iterator folds.
 3. **A pretty-printer** (`arrayglyph::printer` + the `arrayglyph-fmt` binary)
-   that turns dense glyph notation (`+/a × b`) into the verbose Rust it stands
+   that turns dense glyph notation (`+/(a × b)`) into the verbose Rust it stands
    for (`a.zip_with(&b, Mul).reduce(Add)`), and back again.
 
 ---
@@ -19,7 +19,7 @@ three layers:
 
 APL's notation is a *tool of thought*. One glyph names a whole-array operation:
 `+/` is "sum", `×\` is "running product", `⌈/` is "maximum". Compositions read
-as one phrase: `+/a × b` is a dot product. Because there are no loop indices,
+as one phrase: `+/(a × b)` is a dot product. Because there are no loop indices,
 off-by-one and aliasing bugs have nowhere to live. The glyph set is small, fixed,
 and has 60 years of established meaning, so we don't have to invent a vocabulary.
 
@@ -41,9 +41,9 @@ APL-style notation is very dense:
 
 | intent | glyph form | verbose Rust (what it means) |
 |---|---|---|
-| dot product | `+/a × b` | `a.zip_with(&b, Mul).reduce(Add)` |
+| dot product | `+/(a × b)` | `a.zip_with(&b, Mul).reduce(Add)` |
 | running max | `⌈\v` | `v.scan(Max)` |
-| row sums of a matrix product | `+/a +.× b` | `a.matmul(&b).reduce(Add)` |
+| row sums of a matrix product | `+/(a +.× b)` | `a.matmul(&b).reduce(Add)` |
 
 A hand-written loop version of the first row runs 5–8 lines. The intended
 workflow is:
@@ -66,18 +66,21 @@ conversions. APL values terseness: one character per idea, implicit iteration,
 and right-to-left evaluation with no precedence. The two pull against each other,
 and this design doesn't pretend otherwise:
 
+* **We borrow APL's vocabulary, not its grammar.** Glyph text evaluates **left
+  to right with Rust-style precedence** (§7.1), so a Rust reader's instincts
+  about `2 × 3 + 4` are right.
+
 * The **canonical, compiled form is verbose Rust**. Glyphs never hide a borrow,
   an allocation, or a trait bound. The verbose form shows all of them.
 * The macros are deliberately **few and boring**. `reduce!(+, a)` expands to
   `a.reduce(Add)`, which you can also write directly. There are no custom
-  operators, no `proc-macro` parsing of glyph source in Phase 1, and no
-  operator-precedence games.
+  operators and no `proc-macro` parsing of glyph source in Phase 1.
 * Glyph notation lives in **strings, docs, comments, and agent output**, and the
   printer translates it. Rust's lexer rejects most APL glyphs (`×`, `⌈`, `⍴`)
   as tokens, so they can't appear inside `macro_rules!` input anyway. The macros
   use ASCII spellings (`+ - * / max min`).
 
-Some Rustaceans will still find `+/a × b` alien. The bet is that a reversible
+Some Rustaceans will still find `+/(a × b)` alien. The bet is that a reversible
 printer turns the notation into a reading aid rather than a dialect.
 
 ## 5. The shaped-array type
@@ -159,25 +162,94 @@ Operators and other functions:
 | `a +.× b` | inner (matrix) product | `a.matmul(&b)` |
 | `¯3` | negative literal | `-3` |
 
-## 7. Reduce / scan semantics
+## 7. Evaluation order, reduce and scan
 
-* **Axis.** Phase 1 always reduces/scans along the **last axis** (APL's default
-  for `/` and `\`). An `R × C` array reduces to `R × 1`. To reduce columns,
-  `⍉` first: `+/⍉m` ≡ `m.transpose().reduce(Add)`.
-* **Right-to-left.** `f/ x₁ x₂ … xₙ` = `x₁ f (x₂ f (… f xₙ))`, implemented as
-  `DoubleEndedIterator::rfold`. For associative ops this equals a left fold.
-  For non-associative ops it doesn't: `-/1 2 3` = `1 - (2 - 3)` = **2** (not
-  −4), and `÷/8 4 2` = `8 ÷ (4 ÷ 2)` = **4**.
-* **Scan.** Element *i* of `f\x` is `f/` of the first *i*+1 elements
-  (`-\1 2 3` = `1 ¯1 2`). For associative ops this is the O(n) running fold
-  (`Iterator::scan`). For non-associative ops we evaluate each prefix by
-  right-fold, which is O(n²) and exactly faithful to APL. This choice is made
-  by `Dyadic::ASSOCIATIVE`.
+### 7.1 Evaluation order: left to right, Rust-style precedence
+
+**Decision (S, 2026-11-25; see `research/syn-notes.md`, "Design decisions").**
+Glyph expressions evaluate **left to right, matching Rust convention**. APL's
+right-to-left rule is not used. Of the two left-to-right options, strict
+left-to-right with no precedence (Nial-style, `2 × 3 + 4` = 20) or
+**Rust-style precedence**, arrayglyph uses **Rust-style precedence**:
+
+| level (loosest → tightest) | glyph forms | associativity | Rust analogue |
+|---|---|---|---|
+| Sum | `a + b`, `a - b` | left | `+ -` |
+| Product | `a × b`, `a ÷ b`, `a +.× b` | left | `* /` (and Python's `@` for matmul) |
+| MaxMin | `a ⌈ b`, `a ⌊ b` | left | method call `a.max(b)` |
+| Prefix | `f/x`, `f\x`, `⍴x`, `⍉x`, `r c⍴x`, `⍳n` | nests rightward | unary operators / calls |
+| Atom | `x`, `3`, `1 2 3`, `( … )` | — | — |
+
+Worked examples:
+
+| glyph | means | value |
+|---|---|---|
+| `2 × 3 + 4` | `(2 × 3) + 4` | 10 |
+| `2 + 3 × 4` | `2 + (3 × 4)` | 14 |
+| `8 - 4 - 2` | `(8 - 4) - 2` | 2 |
+| `8 ÷ 4 ÷ 2` | `(8 ÷ 4) ÷ 2` | 1 |
+| `+/a × b` | `(+/a) × b` | sum of `a`, times `b` |
+| `+/(a × b)` | dot product | — |
+| `a ⌈ b + c` | `(a ⌈ b) + c` | — |
+| `+/⍉m` | `+/(⍉m)` | column sums |
+
+**Why Rust-style precedence instead of strict left-to-right.** The decision
+was to match Rust convention, and Rust *has* precedence. Strict
+left-to-right would make `2 + 3 × 4` = 20, which surprises Rust readers as
+much as APL's 14 does, and would defeat the reason for switching. Precedence
+is coherent for these glyphs: `× ÷` and `+ -` map one-to-one onto Rust's
+`* /` and `+ -`. The less obvious placements are:
+
+* **`⌈ ⌊` bind tighter than `×`.** Rust has no max/min operator. Its
+  spelling is a method call, `a.max(b)`, which binds tighter than any binary
+  operator. So `a ⌈ b + c` reads as `a.max(b) + c`. The common
+  clamp-at-zero idiom must therefore be parenthesised: `0 ⌈ (x - 1)`. This
+  is the least settled choice (see §10).
+* **`+.×` sits at the `×` level**, like Python's `@` (and like matrix
+  product in mathematical notation).
+* **Prefix forms (`f/`, `⍴`, `⍉`, reshape) bind tightest**, like
+  Rust's unary operators and function calls. So `+/a × b` is `(+/a) × b`. A
+  reduction over an expression needs parentheses: `+/(a × b)`. Stacked
+  prefixes still nest naturally: `+/⍉m` is `+/(⍉m)`, just as `-!x` in Rust
+  is `-(!x)`. Nothing else is coherent for prefix forms.
+
+**Consequences.**
+
+* The printer emits only the parentheses the table requires.
+  `(a × b) + c` is printed `a × b + c`, but `a - (b - c)` keeps its
+  parentheses. Round trips are still the identity on canonical text.
+* Glyph text and Rust operator overloads now agree: `&a * &b + &c` and
+  `a × b + c` mean the same thing.
+* APL users must unlearn right-to-left. `+/a × b` is no longer a dot product.
+  This is the deliberate cost of the decision.
+
+### 7.2 Reduce and scan
+
+* **Axis.** Phase 1 always reduces/scans along the **last axis**. An `R × C`
+  array reduces to `R × 1`. To reduce columns, `⍉` first:
+  `+/⍉m` ≡ `m.transpose().reduce(Add)`. A different default has been
+  decided (S, 2026-11-25): a single `reduce!` with an `axis = N` keyword,
+  **default axis 0 (columns)**, no `reduce_rows!`/`reduce_cols!`, and no
+  all-axes reduction in one call. **It is recorded but not implemented
+  yet.** It changes the default result of every existing `reduce!` call, so it
+  ships with the axis work in Phase 2.
+* **Left fold (decision, follows §7.1).** `f/ x₁ x₂ … xₙ` =
+  `((x₁ f x₂) f …) f xₙ`, implemented with `Iterator::reduce`. Writing the
+  operator out between the items gives the same answer under §7.1's
+  left-associativity: `-/1 2 3` = `1 - 2 - 3` = `(1 - 2) - 3` = **−4**, and
+  `÷/8 4 2` = **1**. APL's right fold gives 2 and 4. For associative ops
+  (`+ × ⌈ ⌊`) the two agree.
+* **Scan.** Element *i* of `f\x` is `f/` of the first *i*+1 elements, which
+  is the running left fold: `-\1 2 3` = `1 ¯1 ¯4`. It is O(n) for every op
+  (`Iterator::scan`). The old O(n²) prefix right fold is gone.
+* **`Dyadic::ASSOCIATIVE`** no longer affects results. It remains as metadata
+  for future parallel (Rayon) reductions, which are only valid for
+  associative ops.
 * **Empty axis.** APL returns the identity element for `+/⍬`. Here
   `reduce`/`scan` require `COLS > 0` at compile time (const assert), so there is
   no identity-element machinery yet.
-* **Floating point.** `Add` and `Mul` are treated as associative even for floats.
-  Scan results may differ from a strict right-fold in the last ulp.
+* **Floating point.** Results are exactly the sequential left fold. A future
+  parallel variant may differ from it in the last ulp.
 * **`Max`/`Min`** use `PartialOrd`. With NaN, they return the left operand.
 
 ## 8. Macro syntax
@@ -198,9 +270,9 @@ implemented as iterator folds. Phase 1 has no `proc-macro` crate.
 `arrayglyph-fmt` CLI:
 
 * **Glyph → Rust (desugaring).** This is a hand-written lexer plus a
-  right-to-left recursive-descent parser with APL rules: no precedence, the
-  right operand extends as far right as possible, and parentheses group. It
-  emits canonical verbose Rust (the table in §6).
+  precedence-climbing parser for §7.1. Infix levels are folded left. Prefix
+  forms are parsed as unary operators. It emits canonical verbose Rust (the
+  table in §6).
 * **Rust → glyph.** This is a small parser for exactly the canonical forms the
   desugarer emits (method chains `.zip_with(&_, Op)`, `.reduce(Op)`, `.scan(Op)`,
   `.matmul(&_)`, `.reshape::<r, c>()`, `.transpose()`, `.shape()`, plus
@@ -209,8 +281,10 @@ implemented as iterator folds. Phase 1 has no `proc-macro` crate.
   **not** a general Rust parser. Arbitrary Rust, including operator forms like
   `&a + &b`, is rejected with an error, not guessed at.
 * **Round trip.** `rust_to_glyph(glyph_to_rust(g)) == g` for every canonical
-  glyph string in the test corpus. Canonical spacing is `a + b`, `+/x`, `⍳5`,
-  `2 3⍴x`, and `a +.× b`. Non-canonical input is normalised. The one lossy
+  glyph string in the test corpus, which covers every precedence level and
+  associativity case. Canonical spacing is `a + b`, `+/x`, `⍳5`, `2 3⍴x`, and
+  `a +.× b`. Canonical parentheses are the minimal ones §7.1 needs.
+  Non-canonical input is normalised. The one lossy
   case is a one-element vector `Array::vector([5])`, which has no strand form
   (APL would write `,5`) and is rejected.
 * The output is checked: `tests/printer_compiles.rs` pastes desugared output
@@ -260,19 +334,19 @@ pub struct ParseError { pub message: String, pub span: Span }
 
 ## 10. Open questions
 
-1. **Axis specification.** APL uses `f/[k]` or `f⌿` (first axis). Should the
-   macro be `reduce!(+, x, axis = 0)`, `reduce!(+[0], x)`, or separate
-   `reduce_rows!`/`reduce_cols!`? Should the default stay "last axis" (APL) or
-   change to "all axes" (NumPy `sum()`)?
+1. ~~Axis specification.~~ **Decided (S, 2026-11-25), not yet implemented:**
+   `reduce!(+, m, axis = N)`, default axis 0 (columns), no separate row/col
+   macros, and no all-axes reduction in one call (§7.2). The glyph spelling
+   (`+/[0] m` vs `+⌿ m`) is still open.
 2. **Rank polymorphism.** APL functions work at any rank. Should we go through
    shape types (`Array<T, S: Shape>`, fully static but complex type signatures),
    dynamic rank (`ArrayD`, simple but runtime shape errors), or both, with
    conversions? This also decides whether reductions can drop a dimension.
-3. **Right-to-left vs Rust precedence.** In glyph text `2 × 3 + 4` is 14 (APL),
-   but in Rust `2 * 3 + 4` is 10. The printer always produces explicit method
-   chains, so the compiled code is unambiguous. But anyone mixing operator
-   overloads (`&a * &b + &c`) in Rust gets Rust precedence. Should glyph text in
-   docs require full parenthesisation, or should we lint for it?
+3. ~~Right-to-left vs Rust precedence.~~ **Resolved (S, 2026-11-25):** left
+   to right with Rust-style precedence and left folds (§7).
+   Still open within it: should `⌈ ⌊` bind tighter than `×` (the current
+   method-call analogy) or looser than `+ -` (so that `0 ⌈ x - 1` clamps
+   without parentheses)?
 4. Smaller ones: empty reductions with identity elements (`+/⍬ = 0`), float
    `÷` on integer arrays (APL always yields floats), and `⎕IO` = 0 vs 1.
 
@@ -284,13 +358,14 @@ transpose, reshape, `reduce!`/`scan!`, the bidirectional printer, and the
 
 **Phase 2**
 
-* **Axis-aware reduce/scan** via an `[axis]` macro parameter
-  (`reduce!(+[0], m)` ≡ APL `+⌿m`). Glyph syntax `+/[0] m` and `+⌿ m`.
+* **Axis-aware reduce/scan** with the decided `axis = N` keyword
+  (`reduce!(+, m, axis = 0)`, default 0 = columns) and matching printer
+  support. The glyph spelling is still to be chosen.
 * **Outer and inner product macros.** `outer!(*, a, b)` (`a ∘.× b`) and a
   general `inner!(+, *, a, b)` (`a +.× b` with any pair of functions; today
   only `+.×` / `matmul` exists).
-* **Operator trains / forks.** `(+/ ÷ ≢)` (mean) as a composable value: a
-  `Train` type plus printer support for tacit forms.
+* **Operator trains / forks.** An explicit compose operator, then forks such
+  as `(+/ ÷ ≢)` (mean) and dyadic trains.
 * **Opt-in Rayon parallel variants** behind a `rayon` cargo feature:
   `par_reduce`, `par_zip_with`, and `par_matmul`. Parallel reduce is only
   offered for `ASSOCIATIVE` ops, which the type system already tracks.

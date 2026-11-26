@@ -5,8 +5,8 @@ APL-inspired, compile-time-shaped arrays for Rust. *(Project codename: Iota.)*
 * **`Array<T, ROWS, COLS>`** is an owned, `Vec`-backed array with its shape in
   the type. Shape mismatches in elementwise ops, `matmul`, and `reshape` are
   **compile errors**.
-* **`reduce!(+, x)` / `scan!(max, x)`** are APL's `+/x` and `⌈\x`: last axis,
-  right to left.
+* **`reduce!(+, x)` / `scan!(max, x)`** are the glyphs `+/x` and `⌈\x`. They
+  work along the last axis as **left folds**, left to right like Rust.
 * **A pretty-printer and the `arrayglyph-fmt` CLI** convert dense glyph
   notation to verbose Rust and back.
 
@@ -22,11 +22,11 @@ use arrayglyph::prelude::*;
 let a = Array::vector([1, 2, 3]);
 let b = Array::vector([4, 5, 6]);
 
-// +/a × b   (dot product)
+// +/(a × b)   (dot product)
 assert_eq!(reduce!(+, a.zip_with(&b, Mul)).item(), 32);
 
-// APL right-to-left: -/1 2 3 = 1 - (2 - 3) = 2
-assert_eq!(reduce!(-, a).item(), 2);
+// Left fold, like Rust: -/1 2 3 = (1 - 2) - 3 = -4
+assert_eq!(reduce!(-, a).item(), -4);
 
 // Running max, per row of a matrix
 let m = Array::from_rows([[3, 1, 4], [1, 5, 9]]);
@@ -46,20 +46,32 @@ glyphs: `+ - * / max min`.
 ## Glyph ↔ Rust
 
 ```text
-$ arrayglyph-fmt '+/a × b' '2 3⍴⍳6' 'a +.× ⍉b' '(+/x) - y'
+$ arrayglyph-fmt '+/(a × b)' '+/a × b' '2 × 3 + x' '2 3⍴⍳6' 'a +.× ⍉b'
 a.zip_with(&b, Mul).reduce(Add)
+a.reduce(Add).zip_with(&b, Mul)
+Array::splat(2).zip_with(&Array::splat(3), Mul).zip_with(&x, Add)
 iota::<6>().reshape::<2, 3>()
 a.matmul(&b.transpose())
-x.reduce(Add).zip_with(&y, Sub)
 
 $ arrayglyph-fmt --to-glyph 'reduce!(max, v)' 'v.zip_with(&Array::splat(2), Mul).scan(Add)'
 ⌈/v
-+\v × 2
++\(v × 2)
 ```
 
-From Rust: `arrayglyph::printer::{glyph_to_rust, rust_to_glyph}`. Glyph text
-follows APL rules: no precedence, and each function takes everything to its
-right.
+From Rust, use `arrayglyph::printer::{glyph_to_rust, rust_to_glyph}`.
+
+**Evaluation order.** Glyph text reads **left to right with Rust-style
+precedence**. This is a deliberate break from APL's right-to-left rule:
+
+| binds | forms | example |
+|---|---|---|
+| loosest | `+ -` | `a - b - c` = `(a - b) - c` |
+| | `× ÷ +.×` | `2 × 3 + x` = `(2 × 3) + x` |
+| | `⌈ ⌊` (like a method call) | `a ⌈ b + c` = `(a ⌈ b) + c` |
+| tightest | prefix `f/ f\ ⍴ ⍉ r c⍴ ⍳n` | `+/a × b` = `(+/a) × b` |
+
+So the dot product is written `+/(a × b)`. Reductions are left folds:
+`-/1 2 3` is `(1 - 2) - 3`, which is `-4`.
 
 | glyph | Rust |
 |---|---|

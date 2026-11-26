@@ -28,13 +28,25 @@ fn desugared_output_compiles_and_evaluates() {
     let b = Array::vector([4, 5, 6]);
     let m = Array::from_rows([[1, 2], [3, 4]]);
 
-    let dot = check!("+/a × b" => a.zip_with(&b, Mul).reduce(Add));
+    let dot = check!("+/(a × b)" => a.zip_with(&b, Mul).reduce(Add));
     assert_eq!(dot.item(), 32);
 
-    let s = check!("-/a" => a.reduce(Sub));
-    assert_eq!(s.item(), 2);
+    // Prefix binds tighter: (+/a) × (+/b) = 6 × 15
+    let prod = check!("+/a × +/b" => a.reduce(Add).zip_with(&b.reduce(Add), Mul));
+    assert_eq!(prod.item(), 90);
 
-    let run = check!("⌈\\a - b" => a.zip_with(&b, Sub).scan(Max));
+    // Rust precedence, left to right: (2 × a) + b
+    let fma = check!("2 × a + b" => Array::splat(2).zip_with(&a, Mul).zip_with(&b, Add));
+    assert_eq!(fma.as_slice(), &[6, 9, 12]);
+
+    // Left-associative subtraction: (b - a) - a
+    let sub2 = check!("b - a - a" => b.zip_with(&a, Sub).zip_with(&a, Sub));
+    assert_eq!(sub2.as_slice(), &[2, 1, 0]);
+
+    let s = check!("-/a" => a.reduce(Sub));
+    assert_eq!(s.item(), -4);
+
+    let run = check!("⌈\\(a - b)" => a.zip_with(&b, Sub).scan(Max));
     assert_eq!(run.as_slice(), &[-3, -3, -3]);
 
     let ext = check!("2 × a" => Array::splat(2).zip_with(&a, Mul));

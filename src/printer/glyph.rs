@@ -1,4 +1,15 @@
-//! Glyph notation: lexer, right-to-left parser, and canonical printer.
+//! Glyph notation: lexer, left-to-right precedence parser, and canonical
+//! printer.
+//!
+//! Binding strength, loosest first (see [`Prec`]):
+//!
+//! | level | forms | associativity |
+//! |---|---|---|
+//! | `Sum` | `a + b`, `a - b` | left |
+//! | `Product` | `a × b`, `a ÷ b`, `a +.× b` | left |
+//! | `MaxMin` | `a ⌈ b`, `a ⌊ b` | left |
+//! | `Prefix` | `f/x`, `f\x`, `⍴x`, `⍉x`, `r c⍴x`, `⍳n` | nests to the right |
+//! | `Atom` | `x`, `3`, `1 2 3`, `( … )` | — |
 
 use super::{Expr, ExprKind, Func, LineIndex, ParseError, Span};
 
@@ -97,6 +108,66 @@ fn lex(src: &str, idx: &LineIndex<'_>) -> Result<Vec<(Span, Tok)>, ParseError> {
     Ok(out)
 }
 
+/// How tightly a glyph form binds, loosest first. Mirrors Rust: products
+/// bind tighter than sums, and prefix forms bind like Rust's unary operators
+/// and method calls (tighter than any infix operator).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Prec {
+    /// `+ -`
+    Sum,
+    /// `× ÷ +.×`
+    Product,
+    /// `⌈ ⌊`
+    MaxMin,
+    /// `f/x f\x ⍴x ⍉x r c⍴x ⍳n`
+    Prefix,
+    /// identifiers, numbers, strands, parenthesised expressions
+    Atom,
+}
+
+impl Prec {
+    fn tighter(self) -> Prec {
+        match self {
+            Prec::Sum => Prec::Product,
+            Prec::Product => Prec::MaxMin,
+            Prec::MaxMin => Prec::Prefix,
+            Prec::Prefix | Prec::Atom => Prec::Atom,
+        }
+    }
+}
+
+fn infix_prec(t: &Tok) -> Option<Prec> {
+    match t {
+        Tok::Func(Func::Add | Func::Sub) => Some(Prec::Sum),
+        Tok::Func(Func::Mul | Func::Div) | Tok::PlusTimes => Some(Prec::Product),
+        Tok::Func(Func::Max | Func::Min) => Some(Prec::MaxMin),
+        _ => None,
+    }
+}
+
+/// A monadic function in prefix position.
+#[derive(Debug, Clone, PartialEq)]
+enum FnAtom {
+    Reduce(Func),
+    Scan(Func),
+    Shape,
+    Transpose,
+    Reshape(Vec<usize>),
+}
+
+impl FnAtom {
+    fn apply(self, x: Expr) -> ExprKind {
+        let x = Box::new(x);
+        match self {
+            FnAtom::Reduce(f) => ExprKind::Reduce(f, x),
+            FnAtom::Scan(f) => ExprKind::Scan(f, x),
+            FnAtom::Shape => ExprKind::Shape(x),
+            FnAtom::Transpose => ExprKind::Transpose(x),
+            FnAtom::Reshape(d) => ExprKind::Reshape(d, x),
+        }
+    }
+}
+
 struct Parser {
     toks: Vec<(Span, Tok)>,
     pos: usize,
@@ -110,14 +181,21 @@ fn node(kind: ExprKind, start: Span, end: Span) -> Expr {
 
 impl Parser {
     fn peek(&self) -> Option<&Tok> {
-        self.toks.get(self.pos).map(|(_, t)| t)
+        self.peek_at(0)
     }
-    fn peek2(&self) -> Option<&Tok> {
-        self.toks.get(self.pos + 1).map(|(_, t)| t)
+    fn peek_at(&self, k: usize) -> Option<&Tok> {
+        self.toks.get(self.pos + k).map(|(_, t)| t)
     }
     /// Span of the next token, or the empty end-of-input span.
     fn cur(&self) -> Span {
         self.toks.get(self.pos).map_or(self.eof, |&(s, _)| s)
+    }
+    /// Span of the most recently consumed token.
+    fn prev(&self) -> Span {
+        self.pos
+            .checked_sub(1)
+            .and_then(|p| self.toks.get(p))
+            .map_or(self.eof, |&(s, _)| s)
     }
     fn bump(&mut self) -> Option<(Span, Tok)> {
         let t = self.toks.get(self.pos).cloned();
@@ -125,88 +203,52 @@ impl Parser {
         t
     }
 
-    /// expr := operand ( dyad expr )?   (the right operand extends to the end)
     fn expr(&mut self) -> Result<Expr, ParseError> {
-        let left = self.operand()?;
-        match self.peek() {
-            Some(Tok::Func(f)) => {
-                let f = *f;
-                if matches!(self.peek2(), Some(Tok::Slash | Tok::Backslash)) {
-                    return Err(ParseError::new(
-                        self.cur(),
-                        "a left argument to `f/` or `f\\` (n-wise reduce) is unsupported",
-                    ));
-                }
-                self.bump();
-                let right = self.expr()?;
-                let (ls, rs) = (left.span, right.span);
-                Ok(node(
-                    ExprKind::Dyadic(f, Box::new(left), Box::new(right)),
-                    ls,
-                    rs,
-                ))
-            }
-            Some(Tok::PlusTimes) => {
-                self.bump();
-                let right = self.expr()?;
-                let (ls, rs) = (left.span, right.span);
-                Ok(node(
-                    ExprKind::MatMul(Box::new(left), Box::new(right)),
-                    ls,
-                    rs,
-                ))
-            }
-            Some(Tok::Rho) => {
-                let dims = match &left.kind {
-                    ExprKind::Scalar(n) => vec![n.clone()],
-                    ExprKind::Strand(ns) => ns.clone(),
-                    _ => {
-                        return Err(ParseError::new(
-                            left.span,
-                            "left argument of dyadic `⍴` must be a literal shape like `2 3`",
-                        ));
-                    }
-                };
-                if dims.len() > 2 {
-                    return Err(ParseError::new(
-                        left.span,
-                        "reshape supports rank 1 or 2 only",
-                    ));
-                }
-                let dims = dims
-                    .iter()
-                    .map(|d| {
-                        d.parse::<usize>().map_err(|_| {
-                            ParseError::new(
-                                left.span,
-                                format!("shape `{d}` is not a non-negative integer"),
-                            )
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                self.bump();
-                let right = self.expr()?;
-                let rs = right.span;
-                Ok(node(
-                    ExprKind::Reshape(dims, Box::new(right)),
-                    left.span,
-                    rs,
-                ))
-            }
-            _ => Ok(left),
-        }
+        self.binary(Prec::Sum)
     }
 
-    fn operand(&mut self) -> Result<Expr, ParseError> {
+    /// Precedence climbing: `level := tighter (op_at_level tighter)*`, folded
+    /// to the left, so `a - b - c` is `(a - b) - c`.
+    fn binary(&mut self, level: Prec) -> Result<Expr, ParseError> {
+        if level >= Prec::Prefix {
+            return self.prefix();
+        }
+        let mut left = self.binary(level.tighter())?;
+        while let Some(tok) = self.peek() {
+            if infix_prec(tok) != Some(level) {
+                break;
+            }
+            if matches!(self.peek_at(1), Some(Tok::Slash | Tok::Backslash)) {
+                return Err(ParseError::new(
+                    self.cur(),
+                    "a left argument to `f/` or `f\\` (n-wise reduce) is unsupported; \
+                     for a reduction on the right, write e.g. `a + +/b`",
+                ));
+            }
+            let (_, tok) = self.bump().expect("peeked");
+            let right = self.binary(level.tighter())?;
+            let (ls, rs) = (left.span, right.span);
+            let (l, r) = (Box::new(left), Box::new(right));
+            let kind = match tok {
+                Tok::PlusTimes => ExprKind::MatMul(l, r),
+                Tok::Func(f) => ExprKind::Dyadic(f, l, r),
+                _ => unreachable!("infix_prec only accepts functions"),
+            };
+            left = node(kind, ls, rs);
+        }
+        Ok(left)
+    }
+
+    /// Tries to read a monadic function at the cursor. Returns `None`, and
+    /// consumes nothing, if the next tokens start an ordinary operand.
+    fn fn_atom(&mut self) -> Result<Option<(FnAtom, Span)>, ParseError> {
         let at = self.cur();
-        let Some((_, tok)) = self.bump() else {
-            return Err(ParseError::new(at, "unexpected end of input"));
-        };
-        match tok {
-            Tok::Func(f) => {
-                let kind: fn(Func, Box<Expr>) -> ExprKind = match self.peek() {
-                    Some(Tok::Slash) => ExprKind::Reduce,
-                    Some(Tok::Backslash) => ExprKind::Scan,
+        let atom = match self.peek() {
+            Some(Tok::Func(f)) => {
+                let f = *f;
+                let atom = match self.peek_at(1) {
+                    Some(Tok::Slash) => FnAtom::Reduce(f),
+                    Some(Tok::Backslash) => FnAtom::Scan(f),
                     _ => {
                         return Err(ParseError::new(
                             at,
@@ -217,37 +259,88 @@ impl Parser {
                         ));
                     }
                 };
-                self.bump();
-                let x = self.expr()?;
-                let xs = x.span;
-                Ok(node(kind(f, Box::new(x)), at, xs))
+                self.pos += 2;
+                atom
             }
-            Tok::Iota => {
-                let arg = self.expr()?;
-                match &arg.kind {
-                    ExprKind::Scalar(n) => match n.parse::<usize>() {
-                        Ok(n) => Ok(node(ExprKind::Iota(n), at, arg.span)),
-                        Err(_) => Err(ParseError::new(
-                            arg.span,
-                            format!("`⍳` needs a non-negative integer, got `{n}`"),
-                        )),
-                    },
-                    _ => Err(ParseError::new(
-                        arg.span,
-                        "`⍳` needs a literal length (its argument is the whole expression to its right)",
-                    )),
+            Some(Tok::Rho) => {
+                self.pos += 1;
+                FnAtom::Shape
+            }
+            Some(Tok::Transpose) => {
+                self.pos += 1;
+                FnAtom::Transpose
+            }
+            Some(Tok::Num(_)) => {
+                // `r c⍴`: a literal shape directly followed by `⍴`.
+                let mut k = 0;
+                while let Some(Tok::Num(_)) = self.peek_at(k) {
+                    k += 1;
                 }
+                if self.peek_at(k) != Some(&Tok::Rho) {
+                    return Ok(None);
+                }
+                let dims_span = Span::new(at.start, self.toks[self.pos + k - 1].0.end);
+                if k > 2 {
+                    return Err(ParseError::new(
+                        dims_span,
+                        "reshape supports rank 1 or 2 only",
+                    ));
+                }
+                let mut dims = Vec::with_capacity(k);
+                for j in 0..k {
+                    let (span, Tok::Num(d)) = &self.toks[self.pos + j] else {
+                        unreachable!("counted Num tokens")
+                    };
+                    dims.push(d.parse::<usize>().map_err(|_| {
+                        ParseError::new(*span, format!("shape `{d}` is not a non-negative integer"))
+                    })?);
+                }
+                self.pos += k + 1;
+                FnAtom::Reshape(dims)
             }
-            Tok::Rho | Tok::Transpose => {
-                let x = self.expr()?;
-                let xs = x.span;
-                let kind = if tok == Tok::Rho {
-                    ExprKind::Shape(Box::new(x))
-                } else {
-                    ExprKind::Transpose(Box::new(x))
-                };
-                Ok(node(kind, at, xs))
-            }
+            _ => return Ok(None),
+        };
+        Ok(Some((atom, Span::new(at.start, self.prev().end))))
+    }
+
+    /// prefix := fn_atom prefix | `⍳` NUM | primary
+    fn prefix(&mut self) -> Result<Expr, ParseError> {
+        let at = self.cur();
+        if let Some((f, fspan)) = self.fn_atom()? {
+            let x = self.prefix()?;
+            let xs = x.span;
+            return Ok(node(f.apply(x), fspan, xs));
+        }
+        if self.peek() == Some(&Tok::Iota) {
+            self.bump();
+            let arg = self.cur();
+            return match (self.bump(), self.peek()) {
+                (Some((_, Tok::Num(_))), Some(Tok::Num(_))) => {
+                    Err(ParseError::new(self.cur(), "`⍳` takes a single length"))
+                }
+                (Some((_, Tok::Num(n))), _) => match n.parse::<usize>() {
+                    Ok(n) => Ok(node(ExprKind::Iota(n), at, arg)),
+                    Err(_) => Err(ParseError::new(
+                        arg,
+                        format!("`⍳` needs a non-negative integer, got `{n}`"),
+                    )),
+                },
+                _ => Err(ParseError::new(
+                    arg,
+                    "`⍳` needs a literal length, like `⍳5`",
+                )),
+            };
+        }
+        self.primary()
+    }
+
+    /// primary := ident | number+ | `(` expr `)`
+    fn primary(&mut self) -> Result<Expr, ParseError> {
+        let at = self.cur();
+        let Some((_, tok)) = self.bump() else {
+            return Err(ParseError::new(at, "unexpected end of input"));
+        };
+        match tok {
             Tok::LParen => {
                 let mut e = self.expr()?;
                 let close = self.cur();
@@ -261,11 +354,9 @@ impl Parser {
             }
             Tok::Num(n) => {
                 let mut nums = vec![n];
-                let mut last = at;
                 while let Some(Tok::Num(_)) = self.peek() {
-                    if let Some((s, Tok::Num(n))) = self.bump() {
+                    if let Some((_, Tok::Num(n))) = self.bump() {
                         nums.push(n);
-                        last = s;
                     }
                 }
                 let kind = if nums.len() == 1 {
@@ -273,7 +364,7 @@ impl Parser {
                 } else {
                     ExprKind::Strand(nums)
                 };
-                Ok(node(kind, at, last))
+                Ok(node(kind, at, self.prev()))
             }
             Tok::Ident(s) => Ok(Expr::new(ExprKind::Ident(s), at)),
             Tok::RParen => Err(ParseError::new(at, "unexpected `)`")),
@@ -312,30 +403,48 @@ fn num(n: &str) -> String {
     }
 }
 
-/// Left operands need parentheses when they would otherwise swallow the
-/// rest of the line (anything that takes a right argument).
-fn left(e: &Expr) -> String {
+/// The binding strength of an already-built node.
+pub(super) fn prec(e: &Expr) -> Prec {
     match &e.kind {
-        ExprKind::Ident(_) | ExprKind::Scalar(_) | ExprKind::Strand(_) => print(e),
-        _ => format!("({})", print(e)),
+        ExprKind::Dyadic(Func::Add | Func::Sub, ..) => Prec::Sum,
+        ExprKind::Dyadic(Func::Mul | Func::Div, ..) | ExprKind::MatMul(..) => Prec::Product,
+        ExprKind::Dyadic(Func::Max | Func::Min, ..) => Prec::MaxMin,
+        ExprKind::Reduce(..)
+        | ExprKind::Scan(..)
+        | ExprKind::Shape(_)
+        | ExprKind::Transpose(_)
+        | ExprKind::Reshape(..)
+        | ExprKind::Iota(_) => Prec::Prefix,
+        ExprKind::Ident(_) | ExprKind::Scalar(_) | ExprKind::Strand(_) => Prec::Atom,
     }
 }
 
+/// Prints `e`, parenthesised if it binds looser than `min`.
+fn at(e: &Expr, min: Prec) -> String {
+    let s = print(e);
+    if prec(e) < min { format!("({s})") } else { s }
+}
+
 pub(super) fn print(e: &Expr) -> String {
+    let p = prec(e);
     match &e.kind {
         ExprKind::Ident(s) => s.clone(),
         ExprKind::Scalar(n) => num(n),
         ExprKind::Strand(ns) => ns.iter().map(|n| num(n)).collect::<Vec<_>>().join(" "),
         ExprKind::Iota(n) => format!("⍳{n}"),
-        ExprKind::Shape(x) => format!("⍴{}", print(x)),
-        ExprKind::Transpose(x) => format!("⍉{}", print(x)),
+        ExprKind::Shape(x) => format!("⍴{}", at(x, Prec::Prefix)),
+        ExprKind::Transpose(x) => format!("⍉{}", at(x, Prec::Prefix)),
         ExprKind::Reshape(dims, x) => {
             let d: Vec<String> = dims.iter().map(ToString::to_string).collect();
-            format!("{}⍴{}", d.join(" "), print(x))
+            format!("{}⍴{}", d.join(" "), at(x, Prec::Prefix))
         }
-        ExprKind::Dyadic(f, a, b) => format!("{} {} {}", left(a), f.glyph(), print(b)),
-        ExprKind::Reduce(f, x) => format!("{}/{}", f.glyph(), print(x)),
-        ExprKind::Scan(f, x) => format!("{}\\{}", f.glyph(), print(x)),
-        ExprKind::MatMul(a, b) => format!("{} +.× {}", left(a), print(b)),
+        // Left-associative: the left operand may sit at the same level, the
+        // right operand must bind strictly tighter.
+        ExprKind::Dyadic(f, a, b) => {
+            format!("{} {} {}", at(a, p), f.glyph(), at(b, p.tighter()))
+        }
+        ExprKind::MatMul(a, b) => format!("{} +.× {}", at(a, p), at(b, p.tighter())),
+        ExprKind::Reduce(f, x) => format!("{}/{}", f.glyph(), at(x, Prec::Prefix)),
+        ExprKind::Scan(f, x) => format!("{}\\{}", f.glyph(), at(x, Prec::Prefix)),
     }
 }

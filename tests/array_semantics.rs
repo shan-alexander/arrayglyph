@@ -2,33 +2,33 @@
 
 use arrayglyph::prelude::*;
 
-/// Reference right-to-left reduction written as an explicit loop.
-fn ref_rfold(xs: &[i64], f: impl Fn(i64, i64) -> i64) -> i64 {
-    let mut acc = xs[xs.len() - 1];
-    for i in (0..xs.len() - 1).rev() {
-        acc = f(xs[i], acc);
+/// Reference left-to-right reduction written as an explicit loop.
+fn ref_lfold(xs: &[i64], f: impl Fn(i64, i64) -> i64) -> i64 {
+    let mut acc = xs[0];
+    for &x in &xs[1..] {
+        acc = f(acc, x);
     }
     acc
 }
 
 #[test]
-fn reduce_is_right_to_left_for_all_ops() {
+fn reduce_is_left_to_right_for_all_ops() {
     let data = [7i64, 3, 9, 2, 5];
     let v = Array::vector(data);
-    assert_eq!(reduce!(+, v).item(), ref_rfold(&data, |a, b| a + b));
-    assert_eq!(reduce!(-, v).item(), ref_rfold(&data, |a, b| a - b));
-    assert_eq!(reduce!(*, v).item(), ref_rfold(&data, |a, b| a * b));
-    let pow2 = [64i64, 8, 4, 2]; // no zero divisors right-to-left
+    assert_eq!(reduce!(+, v).item(), ref_lfold(&data, |a, b| a + b));
+    assert_eq!(reduce!(-, v).item(), ref_lfold(&data, |a, b| a - b));
+    assert_eq!(reduce!(*, v).item(), ref_lfold(&data, |a, b| a * b));
+    let pow2 = [64i64, 8, 4, 2]; // no zero divisors left-to-right
     assert_eq!(
         reduce!(/, Array::vector(pow2)).item(),
-        ref_rfold(&pow2, |a, b| a / b)
+        ref_lfold(&pow2, |a, b| a / b)
     );
     assert_eq!(reduce!(max, v).item(), 9);
     assert_eq!(reduce!(min, v).item(), 2);
-    // APL reference values
-    assert_eq!(reduce!(-, Array::vector([1, 2, 3])).item(), 2);
-    assert_eq!(reduce!(/, Array::vector([8, 4, 2])).item(), 4);
-    assert_eq!(reduce!(-, Array::vector([1, 2, 3, 4])).item(), -2); // 1-(2-(3-4))
+    // Left-fold reference values (APL's right fold would give 2, 4 and -2).
+    assert_eq!(reduce!(-, Array::vector([1, 2, 3])).item(), -4); // (1-2)-3
+    assert_eq!(reduce!(/, Array::vector([8, 4, 2])).item(), 1); // (8/4)/2
+    assert_eq!(reduce!(-, Array::vector([1, 2, 3, 4])).item(), -8); // ((1-2)-3)-4
 }
 
 #[test]
@@ -38,16 +38,16 @@ fn scan_prefixes_match_reduce() {
     let sub = scan!(-, v);
     let add = scan!(+, v);
     for k in 1..=data.len() {
-        assert_eq!(sub[k - 1], ref_rfold(&data[..k], |a, b| a - b));
-        assert_eq!(add[k - 1], ref_rfold(&data[..k], |a, b| a + b));
+        assert_eq!(sub[k - 1], ref_lfold(&data[..k], |a, b| a - b));
+        assert_eq!(add[k - 1], ref_lfold(&data[..k], |a, b| a + b));
     }
     let pow2 = [64i64, 8, 4, 2];
     let div = scan!(/, Array::vector(pow2));
-    assert_eq!(div.as_slice(), &[64, 8, 32, 16]);
+    assert_eq!(div.as_slice(), &[64, 8, 2, 1]);
     for k in 1..=pow2.len() {
-        assert_eq!(div[k - 1], ref_rfold(&pow2[..k], |a, b| a / b));
+        assert_eq!(div[k - 1], ref_lfold(&pow2[..k], |a, b| a / b));
     }
-    assert_eq!(scan!(-, Array::vector([1, 2, 3])).as_slice(), &[1, -1, 2]);
+    assert_eq!(scan!(-, Array::vector([1, 2, 3])).as_slice(), &[1, -1, -4]);
     assert_eq!(scan!(min, v).as_slice(), &[7, 3, 3, 2, 2]);
 }
 
@@ -74,7 +74,7 @@ fn macros_accept_references_and_expressions() {
 #[test]
 fn floats_work() {
     let v = Array::vector([1.0, 2.0, 4.0]);
-    assert_eq!(reduce!(/, v).item(), 1.0 / (2.0 / 4.0));
+    assert_eq!(reduce!(/, v).item(), (1.0 / 2.0) / 4.0);
     assert_eq!(reduce!(max, v).item(), 4.0);
 }
 

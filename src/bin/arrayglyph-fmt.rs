@@ -4,7 +4,7 @@
 //! arrayglyph-fmt [--to-rust | --to-glyph] [EXPR ...]
 //! ```
 //!
-//! * `--to-rust` (default) desugars glyph notation: `+/a × b` becomes
+//! * `--to-rust` (default) desugars glyph notation: `+/(a × b)` becomes
 //!   `a.zip_with(&b, Mul).reduce(Add)`.
 //! * `--to-glyph` compresses canonical Rust back to glyphs.
 //!
@@ -26,7 +26,7 @@ usage: arrayglyph-fmt [--to-rust | --to-glyph] [EXPR ...]
 With no EXPR, reads one expression per line from stdin.
 
 examples:
-  arrayglyph-fmt '+/a × b'
+  arrayglyph-fmt '+/(a × b)'
   arrayglyph-fmt --to-glyph 'a.zip_with(&b, Mul).reduce(Add)'";
 
 fn main() -> ExitCode {

@@ -8,14 +8,32 @@
 //! ```
 //! use arrayglyph::printer::{glyph_to_rust, rust_to_glyph};
 //!
-//! let rust = glyph_to_rust("+/a × b").unwrap();
+//! let rust = glyph_to_rust("+/(a × b)").unwrap();
 //! assert_eq!(rust, "a.zip_with(&b, Mul).reduce(Add)");
-//! assert_eq!(rust_to_glyph(&rust).unwrap(), "+/a × b");
+//! assert_eq!(rust_to_glyph(&rust).unwrap(), "+/(a × b)");
+//!
+//! // Rust-style precedence, evaluated left to right:
+//! assert_eq!(glyph_to_rust("+/a × b").unwrap(), "a.reduce(Add).zip_with(&b, Mul)");
+//! assert_eq!(
+//!     glyph_to_rust("2 × 3 + x").unwrap(),
+//!     "Array::splat(2).zip_with(&Array::splat(3), Mul).zip_with(&x, Add)"
+//! );
 //! ```
 //!
-//! Glyph text uses APL rules: **no precedence**, functions take everything to
-//! their right, and parentheses group. So `2 × 3 + x` means `2 × (3 + x)`.
-//! See the crate's `DESIGN.md` §6 for the full glyph table.
+//! Glyph text is read **left to right with Rust-style precedence**, not with
+//! APL's right-to-left rule:
+//!
+//! * `× ÷ +.×` bind tighter than `+ -`, so `2 × 3 + x` is `(2 × 3) + x`.
+//! * `⌈ ⌊` bind tighter still, like a method call: `a ⌈ b + c` is
+//!   `(a ⌈ b) + c`.
+//! * All infix operators are left-associative: `a - b - c` is `(a - b) - c`.
+//! * Prefix forms (`f/`, `f\`, `⍴`, `⍉`, `r c⍴`, `⍳n`) bind tighter than any
+//!   infix operator, like Rust's unary operators. So `+/a × b` is
+//!   `(+/a) × b`, and the dot product is written `+/(a × b)`.
+//!
+//! Parentheses group. The glyph printer emits only the parentheses that this
+//! table needs. See the crate's `DESIGN.md` §6 and §7 for the full glyph
+//! table and evaluation rules.
 //!
 //! The Rust side is **not** a general Rust parser. It accepts exactly the
 //! canonical forms that [`glyph_to_rust`] emits, and rejects anything else
@@ -259,8 +277,12 @@ impl Expr {
     ///
     /// ```
     /// use arrayglyph::printer::Expr;
+    /// // Redundant parentheses and spacing are normalised away...
     /// let e = Expr::parse_glyph("( +/ x )  -  y").unwrap();
-    /// assert_eq!(e.to_glyph(), "(+/x) - y");
+    /// assert_eq!(e.to_glyph(), "+/x - y");
+    /// // ...but parentheses that change the meaning are kept.
+    /// let e = Expr::parse_glyph("a - (b - c)").unwrap();
+    /// assert_eq!(e.to_glyph(), "a - (b - c)");
     /// ```
     pub fn to_glyph(&self) -> String {
         glyph::print(self)
@@ -352,7 +374,7 @@ pub fn glyph_to_rust(src: &str) -> Result<String, ParseError> {
 /// use arrayglyph::printer::rust_to_glyph;
 /// assert_eq!(
 ///     rust_to_glyph("a.zip_with(&Array::splat(2), Mul).scan(Max)").unwrap(),
-///     "⌈\\a × 2"
+///     "⌈\\(a × 2)"
 /// );
 /// assert!(rust_to_glyph("for i in 0..n {}").is_err());
 /// ```
@@ -403,22 +425,26 @@ mod span_tests {
 
     #[test]
     fn ast_spans_on_multiline_input() {
-        let src = "+/a\n  × ⍳3";
+        let src = "+/(a\n  × ⍳3)";
         let e = Expr::parse_glyph(src).unwrap();
         assert_eq!(e.span.slice(src), src);
-        assert_eq!((lc(e.span.start), lc(e.span.end)), ((1, 1), (2, 7)));
+        assert_eq!((lc(e.span.start), lc(e.span.end)), ((1, 1), (2, 8)));
 
         let ExprKind::Reduce(_, body) = &e.kind else {
             panic!("expected reduce")
         };
-        assert_eq!(body.span.slice(src), "a\n  × ⍳3");
+        assert_eq!(body.span.slice(src), "(a\n  × ⍳3)");
         let ExprKind::Dyadic(Func::Mul, a, iota) = &body.kind else {
             panic!("expected dyadic ×")
         };
-        assert_eq!((lc(a.span.start), lc(a.span.end)), ((1, 3), (1, 4)));
+        assert_eq!((lc(a.span.start), lc(a.span.end)), ((1, 4), (1, 5)));
         assert_eq!(iota.span.slice(src), "⍳3");
         assert_eq!((lc(iota.span.start), lc(iota.span.end)), ((2, 5), (2, 7)));
-        assert_eq!(iota.span.start.offset, 9); // 4 (line 1) + 2 spaces + 3 bytes for ×
+        assert_eq!(iota.span.start.offset, 10); // 5 (line 1) + 2 spaces + 3 bytes for ×
+
+        // Without parentheses, prefix `+/` binds tighter than `×`.
+        let e = Expr::parse_glyph("+/a\n  × ⍳3").unwrap();
+        assert!(matches!(e.kind, ExprKind::Dyadic(Func::Mul, ..)));
     }
 
     #[test]

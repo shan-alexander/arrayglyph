@@ -29,7 +29,9 @@ pub trait Dyadic<T> {
     const GLYPH: char;
     /// The verbose Rust name of the marker type, e.g. `"Mul"`.
     const NAME: &'static str;
-    /// Whether `(a f b) f c == a f (b f c)`. This picks the O(n) scan.
+    /// Whether `(a f b) f c == a f (b f c)`. Reductions are left folds for
+    /// every op, so this doesn't change results. It is metadata for future
+    /// parallel (Rayon) reductions, which are only valid for associative ops.
     const ASSOCIATIVE: bool;
     /// Applies the function to `a` and `b`, in that order.
     fn apply(a: T, b: T) -> T;
@@ -67,12 +69,12 @@ arith_op!(
     true
 );
 arith_op!(
-    /// Subtraction, glyph `-`. This is **not associative**, so reductions
-    /// follow APL's right-to-left rule: `-/ 1 2 3` is `1 - (2 - 3)`, which is `2`.
+    /// Subtraction, glyph `-`. This is **not associative**. Reductions are
+    /// left folds: `-/ 1 2 3` is `(1 - 2) - 3`, which is `-4`.
     ///
     /// ```
     /// use arrayglyph::{op::Sub, Array};
-    /// assert_eq!(Array::vector([1, 2, 3]).reduce(Sub).item(), 2);
+    /// assert_eq!(Array::vector([1, 2, 3]).reduce(Sub).item(), -4);
     /// ```
     Sub,
     Sub,
@@ -95,12 +97,12 @@ arith_op!(
 );
 arith_op!(
     /// Division, glyph `÷`. It uses `T`'s own `Div`, so integer division
-    /// truncates (APL would give a float). It is **not associative**:
-    /// `÷/ 8 4 2` is `8 ÷ (4 ÷ 2)`, which is `4`.
+    /// truncates (APL would give a float). It is **not associative**.
+    /// Reductions are left folds: `÷/ 8 4 2` is `(8 ÷ 4) ÷ 2`, which is `1`.
     ///
     /// ```
     /// use arrayglyph::{op::Div, Array};
-    /// assert_eq!(Array::vector([8, 4, 2]).reduce(Div).item(), 4);
+    /// assert_eq!(Array::vector([8, 4, 2]).reduce(Div).item(), 1);
     /// ```
     Div,
     Div,
