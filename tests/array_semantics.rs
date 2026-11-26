@@ -199,3 +199,27 @@ fn display_honours_precision_and_width() {
     // Without a precision, elements print as Display does.
     assert_eq!(m.to_string(), "   1.5 -2\n10.125  0");
 }
+
+#[test]
+fn broadcast_stretches_length_one_axes() {
+    let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    let row = Array::vector([10, 20, 30]);
+    let col: Array<i32, 2, 1> = Array::from_rows([[100], [200]]);
+    assert_eq!(
+        m.zip_with(&row.broadcast(), Add).as_slice(),
+        &[11, 22, 33, 14, 25, 36]
+    );
+    assert_eq!(
+        m.zip_with(&col.broadcast(), Add).as_slice(),
+        &[101, 102, 103, 204, 205, 206]
+    );
+    // A 1×1 broadcasts to anything; a matching shape is a copy.
+    let one = Array::vector([7]);
+    assert_eq!(one.broadcast::<2, 2>().as_slice(), &[7, 7, 7, 7]);
+    assert_eq!(m.broadcast::<2, 3>(), m);
+    // Centre each column on its own mean (the showcase's normalisation).
+    let f = Array::from_rows([[1.0, 10.0], [3.0, 30.0]]);
+    let col_means = f.reduce(Add).map(|x| x / 2.0);
+    let centred = f.zip_with(&col_means.broadcast(), Sub);
+    assert_eq!(centred.as_slice(), &[-1.0, -10.0, 1.0, 10.0]);
+}

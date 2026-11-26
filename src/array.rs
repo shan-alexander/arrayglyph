@@ -762,6 +762,44 @@ impl<T: Clone, const ROWS: usize, const COLS: usize> Array<T, ROWS, COLS> {
             data: vec![value; ROWS * COLS],
         }
     }
+
+    /// Stretches length-1 axes to a larger shape, like NumPy's
+    /// `broadcast_to`. A `1 × C` row repeats down `R2` rows; an `R × 1`
+    /// column repeats across `C2` columns. Axes that aren't length 1 must
+    /// already match; that is checked at compile time.
+    ///
+    /// This is what makes "subtract the column means" type-check: the means
+    /// are `1 × C`, the data is `R × C`.
+    ///
+    /// ```
+    /// use arrayglyph::{op::Sub, Array};
+    /// let m = Array::from_rows([[1, 2, 3], [4, 5, 6]]);
+    /// let first_row = Array::vector([1, 2, 3]);
+    /// // Shape R2 × C2 is inferred from `zip_with`'s other operand (2×3).
+    /// let shifted = m.zip_with(&first_row.broadcast(), Sub);
+    /// assert_eq!(shifted.as_slice(), &[0, 0, 0, 3, 3, 3]);
+    ///
+    /// let col: Array<i32, 2, 1> = Array::from_rows([[10], [20]]);
+    /// assert_eq!(col.broadcast::<2, 3>().as_slice(), &[10, 10, 10, 20, 20, 20]);
+    /// ```
+    ///
+    /// ```compile_fail,E0080
+    /// use arrayglyph::Array;
+    /// let v = Array::vector([1, 2, 3]);
+    /// let _ = v.broadcast::<2, 4>(); // ERROR: 3 columns can't become 4
+    /// ```
+    pub fn broadcast<const R2: usize, const C2: usize>(&self) -> Array<T, R2, C2> {
+        const {
+            assert!(
+                (ROWS == R2 || ROWS == 1) && (COLS == C2 || COLS == 1),
+                "broadcast: each axis must already match or have length 1"
+            )
+        };
+        Array::from_fn(|r, c| {
+            let (sr, sc) = (if ROWS == 1 { 0 } else { r }, if COLS == 1 { 0 } else { c });
+            self.data[sr * COLS + sc].clone()
+        })
+    }
 }
 
 impl<T: Default, const ROWS: usize, const COLS: usize> Default for Array<T, ROWS, COLS> {
